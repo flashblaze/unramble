@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "voice-tasks",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-16",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "ai": { "binding": "AI", "remote": true },
+  "secrets": {
+    // APP_TOKEN: bearer token the watch sends. TICKTICK_TOKEN: from `bun run auth`.
+    "required": ["APP_TOKEN", "TICKTICK_TOKEN"]
+  },
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true, "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 1 }
+  }
+}

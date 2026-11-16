@@ -1,0 +1,139 @@
+import { extractTasks, isSilence, transcribe } from "./extract";
+import { isValidTimeZone } from "./dates";
+import { CreateTasksBody } from "./tasks";
+import { createTask, TickTickAuthError } from "./ticktick";
+
+const MAX_AUDIO_BYTES = 3 * 1024 * 1024;
+const MAX_JSON_BYTES = 64 * 1024;
+
+type ErrorCode =
+  | "unauthorized"
+  | "not_found"
+  | "method_not_allowed"
+  | "bad_timezone"
+  | "bad_request"
+  | "empty_audio"
+  | "too_large"
+  | "no_speech"
+  | "ticktick_auth_expired"
+  | "internal";
+
+function errorResponse(status: number, error: ErrorCode): Response {
+  return Response.json({ error }, { status });
+}
+
+async function isAuthorized(request: Request, expected: string | undefined): Promise<boolean> {
+  const header = request.headers.get("Authorization") ?? "";
+  if (!expected || !header.startsWith("Bearer ")) return false;
+  const encoder = new TextEncoder();
+  const [provided, wanted] = await Promise.all([
+    crypto.subtle.digest("SHA-256", encoder.encode(header.slice("Bearer ".length))),
+    crypto.subtle.digest("SHA-256", encoder.encode(expected)),
+  ]);
+  return crypto.subtle.timingSafeEqual(provided, wanted);
+}
+
+/** Reads the body up to `limit` bytes; null if it is larger. Rejects early on a too-large Content-Length. */
+async function readBody(request: Request, limit: number): Promise<Uint8Array | null> {
+  if (Number(request.headers.get("Content-Length") ?? 0) > limit) return null;
+  if (!request.body) return new Uint8Array();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for await (const chunk of request.body) {
+    size += chunk.byteLength;
+    if (size > limit) return null;
+    chunks.push(chunk);
+  }
+  const body = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return body;
+}
+
+/** POST /extract?tz=<IANA zone>, body = Ogg/Opus audio. → {transcript, tasks} */
+async function handleExtract(request: Request, env: Env, url: URL, requestId: string): Promise<Response> {
+  const tz = url.searchParams.get("tz") ?? "";
+  if (!isValidTimeZone(tz)) return errorResponse(400, "bad_timezone");
+  const audio = await readBody(request, MAX_AUDIO_BYTES);
+  if (!audio) return errorResponse(413, "too_large");
+  if (audio.byteLength === 0) return errorResponse(400, "empty_audio");
+
+  const whisperStart = Date.now();
+  const transcript = await transcribe(env.AI, audio);
+  const whisperMs = Date.now() - whisperStart;
+  if (isSilence(transcript)) {
+    console.log(JSON.stringify({ message: "extract", requestId, audioBytes: audio.byteLength, whisperMs, outcome: "no_speech" }));
+    return errorResponse(422, "no_speech");
+  }
+
+  const llmStart = Date.now();
+  const { tasks, model } = await extractTasks(env.AI, transcript, Date.now(), tz);
+  console.log(
+    JSON.stringify({
+      message: "extract",
+      requestId,
+      audioBytes: audio.byteLength,
+      words: transcript.split(/\s+/).length,
+      tasks: tasks.length,
+      model,
+      whisperMs,
+      llmMs: Date.now() - llmStart,
+    }),
+  );
+  return Response.json({ transcript, tasks });
+}
+
+/** POST /tasks, body = {tz, tasks}. Creates each task in the TickTick Inbox. → {created, failed} */
+async function handleTasks(request: Request, env: Env, requestId: string): Promise<Response> {
+  const raw = await readBody(request, MAX_JSON_BYTES);
+  if (!raw) return errorResponse(413, "too_large");
+  let json: unknown;
+  try {
+    json = JSON.parse(new TextDecoder().decode(raw));
+  } catch {
+    return errorResponse(400, "bad_request");
+  }
+  const body = CreateTasksBody.safeParse(json);
+  if (!body.success) return errorResponse(400, "bad_request");
+  const { tz, tasks } = body.data;
+  if (!isValidTimeZone(tz)) return errorResponse(400, "bad_timezone");
+
+  const created: { title: string; id: string }[] = [];
+  const failed: { title: string; error: string }[] = [];
+  // Sequential: keeps TickTick's ordering and stays clear of its rate limits.
+  for (const task of tasks) {
+    try {
+      created.push({ title: task.title, id: await createTask(env.TICKTICK_TOKEN, task, tz) });
+    } catch (error) {
+      if (error instanceof TickTickAuthError) {
+        console.error(JSON.stringify({ message: "tasks", requestId, outcome: "ticktick_auth_expired", created: created.length }));
+        return Response.json({ error: "ticktick_auth_expired", created }, { status: 502 });
+      }
+      failed.push({ title: task.title, error: "ticktick_failed" });
+      console.error(JSON.stringify({ message: "ticktick create failed", requestId, error: String(error) }));
+    }
+  }
+  console.log(JSON.stringify({ message: "tasks", requestId, created: created.length, failed: failed.length }));
+  return Response.json({ created, failed });
+}
+
+export default {
+  async fetch(request, env): Promise<Response> {
+    const url = new URL(request.url);
+    const requestId = request.headers.get("cf-ray") ?? crypto.randomUUID();
+    try {
+      if (!(await isAuthorized(request, env.APP_TOKEN))) return errorResponse(401, "unauthorized");
+      if (url.pathname !== "/extract" && url.pathname !== "/tasks") return errorResponse(404, "not_found");
+      if (request.method !== "POST") return errorResponse(405, "method_not_allowed");
+      return url.pathname === "/extract"
+        ? await handleExtract(request, env, url, requestId)
+        : await handleTasks(request, env, requestId);
+    } catch (error) {
+      console.error(JSON.stringify({ message: "unhandled error", requestId, path: url.pathname, error: String(error) }));
+      return errorResponse(500, "internal");
+    }
+  },
+} satisfies ExportedHandler<Env>;
