@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Watch App</string>
+    <string name="hello">Hello from Omarchy</string>
+    <string name="taps">Taps: %1$d</string>
+</resources>
