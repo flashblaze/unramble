@@ -32,6 +32,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -231,13 +232,21 @@ private fun ReviewScreen(review: UiState.Review, onToggle: (Int) -> Unit, onCrea
     ) {
         item { ListHeader { Text(pluralStringResource(R.plurals.tasks_heard, review.tasks.size, review.tasks.size)) } }
         itemsIndexed(review.tasks) { index, task ->
-            val details = listOfNotNull(task.due?.let { dueLabel(it, today) }, if (task.priority == 5) "High" else null)
+            // Show everything that will be sent: date, any priority, and notes (truncated on the small screen).
+            val priority = when (task.priority) {
+                5 -> "High"
+                3 -> "Medium"
+                1 -> "Low"
+                else -> null
+            }
+            val meta = listOfNotNull(task.due?.let { dueLabel(it, today) }, priority).joinToString(" · ")
+            val secondary = listOf(meta, task.notes.orEmpty()).filter { it.isNotEmpty() }.joinToString("\n")
             CheckboxButton(
                 checked = index in review.selected,
                 onCheckedChange = { onToggle(index) },
                 modifier = Modifier.fillMaxWidth(),
                 label = { Text(task.title, maxLines = 3) },
-                secondaryLabel = if (details.isEmpty()) null else ({ Text(details.joinToString(" · ")) }),
+                secondaryLabel = if (secondary.isEmpty()) null else ({ Text(secondary, maxLines = 4, overflow = TextOverflow.Ellipsis) }),
             )
         }
         item { SecondaryAction(stringResource(R.string.discard), onDiscard) }

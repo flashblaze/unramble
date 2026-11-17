@@ -23,11 +23,18 @@ data class Extraction(val transcript: String, val tasks: List<Task>)
 @Serializable
 data class CreatedTask(val title: String, val id: String)
 
+/** [index] is the task's position in the `/tasks` request; titles can repeat, positions can't. */
 @Serializable
-data class FailedTask(val title: String, val error: String)
+data class FailedTask(val index: Int, val title: String, val error: String)
 
 @Serializable
-data class CreateResult(val created: List<CreatedTask>, val failed: List<FailedTask>)
+data class CreateResult(val created: List<CreatedTask>, val failed: List<FailedTask>) {
+    /** The tasks from [sent] to retry: exactly the failed positions, so a retry never re-creates a task. */
+    fun failedOf(sent: List<Task>): List<Task> {
+        val failedIndices = failed.map { it.index }.toSet()
+        return sent.filterIndexed { i, _ -> i in failedIndices }
+    }
+}
 
 @Serializable
 private data class CreateRequest(val tz: String, val tasks: List<Task>)

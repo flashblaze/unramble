@@ -27,7 +27,8 @@ sealed interface UiState {
 enum class Retry { Upload, Create, RecordAgain }
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
-    private val api = TasksApi(BuildConfig.WORKER_URL, BuildConfig.APP_TOKEN)
+    // Lazy: a blank WORKER_URL would throw here; record() reports the missing config instead.
+    private val api by lazy { TasksApi(BuildConfig.WORKER_URL, BuildConfig.APP_TOKEN) }
     private val _state = MutableStateFlow<UiState>(UiState.Idle)
     val state: StateFlow<UiState> = _state.asStateFlow()
 
@@ -112,8 +113,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _state.value = try {
                 val result = api.createTasks(ZoneId.systemDefault().id, pending)
-                val failedTitles = result.failed.map { it.title }.toSet()
-                pending = pending.filter { it.title in failedTitles }
+                pending = result.failedOf(pending)
                 if (pending.isEmpty()) discardAudio()
                 UiState.Done(result.created.size, pending)
             } catch (e: ApiException) {
@@ -141,6 +141,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         e.code == "ticktick_auth_expired" -> "TickTick login expired. Run bun run auth in worker/"
         e.code == "unauthorized" -> "Worker rejected the app token"
         e.code == "too_large" -> "Recording too large"
+        e.code == "rate_limited" -> "Too many requests. Try again in a minute"
         else -> "Server error (${e.code})"
     }
 }

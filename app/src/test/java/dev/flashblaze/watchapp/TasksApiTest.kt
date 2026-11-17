@@ -22,6 +22,19 @@ class TasksApiTest {
     @After
     fun stop() = server.close()
 
+    /** Regression: failures were matched by title, so retrying re-created a same-titled task that had succeeded. */
+    @Test
+    fun retryKeepsOnlyFailedPositions() = runTest {
+        server.enqueue(
+            MockResponse.Builder()
+                .body("""{"created":[{"title":"Call mom","id":"a"}],"failed":[{"index":1,"title":"Call mom","error":"ticktick_failed"}]}""")
+                .build(),
+        )
+        val sent = listOf(Task("Call mom"), Task("Call mom", due = "2026-11-20"))
+        val result = TasksApi(server.url("/").toString(), "token").createTasks("UTC", sent)
+        assertEquals(listOf(Task("Call mom", due = "2026-11-20")), result.failedOf(sent))
+    }
+
     /** Regression: priority 0 (the default) was omitted and the Worker rejected the body with bad_request. */
     @Test
     fun createTasksSendsPriorityAndOmitsNulls() = runTest {

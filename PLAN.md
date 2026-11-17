@@ -59,6 +59,8 @@ watch-app/
     src/tasks.ts          zod schemas: Task, /tasks body, model output + grounding guard
     src/dates.ts          time-zone math: prompt calendar, local due → TickTick date
     src/ticktick.ts       TickTick client (Inbox)
+    src/quota.ts          Durable Object: strict per-credential quota (10/min, 30 extracts/day)
+    src/errors.ts         log-safe error summaries (no transcript text)
     scripts/auth.ts       TickTick OAuth on the laptop → .dev.vars + Worker secret
     scripts/wrangler.sh   runs wrangler with the cf CLI login
     test/                 vitest in the Workers runtime (@cloudflare/vitest-plugin)
@@ -129,10 +131,10 @@ Deployed at **`https://voice-tasks.flashblaze.workers.dev`**. Code in `worker/`.
 
 | Route | Body | 200 response | Errors |
 |---|---|---|---|
-| `/extract?tz=<IANA zone>` | raw Ogg/Opus audio, ≤ 3 MB | `{transcript, tasks: [{title, due?, priority, notes?}]}` | 400 `bad_timezone` / `empty_audio`, 413 `too_large`, 422 `no_speech` |
-| `/tasks` | `{tz, tasks: [...]}` (1–20, as returned by `/extract`) | `{created: [{title, id}], failed: [{title, error}]}` | 400 `bad_request` / `bad_timezone`, 413 `too_large`, 502 `ticktick_auth_expired` (+ `created` so far) |
+| `/extract?tz=<IANA zone>` | raw Ogg/Opus audio, ≤ 1.5 MB | `{transcript, tasks: [{title, due?, priority, notes?}]}` | 400 `bad_timezone` / `empty_audio`, 413 `too_large`, 422 `no_speech` |
+| `/tasks` | `{tz, tasks: [...]}` (1–20, as returned by `/extract`) | `{created: [{title, id}], failed: [{index, title, error}]}` | 400 `bad_request` / `bad_timezone`, 413 `too_large`, 502 `ticktick_auth_expired` (+ `created` so far) |
 
-Shared: 401 `unauthorized` (checked before routing), 404 `not_found`, 405 `method_not_allowed`, 500 `internal`. Retry `/tasks` with only the `failed` titles, so nothing is duplicated.
+Shared: 401 `unauthorized` (checked before anything else), 429 `rate_limited` + `Retry-After` (quota, below), 404 `not_found`, 405 `method_not_allowed`, 500 `internal`. Retry `/tasks` with only the `failed` **positions** (`index`), so nothing is duplicated even when titles repeat.
 
 **Verified:**
 - `curl` with the 30 s dictation returned 5 correct tasks: dates, all-day vs timed, and priority 5 for "high priority". `/tasks` created all 5 in Inbox. Read back from TickTick: 10:00 IST is stored as `04:30Z`, all-day dates as local midnight. Test tasks deleted afterwards.
@@ -176,6 +178,30 @@ UI notes: the edge button (e.g. "Add 2") collapses while the list can still scro
 - A cold boot shows the "Hello" onboarding over the app; swipe up once.
 
 `worker/spike/tap.sh "<label>"` taps a UI node by its text.
+
+### Security audit + code review fixes ✅ 2026-11-17
+A read-only security audit and a code review found no critical or high issues. Fixed:
+
+| # | Finding | Fix |
+|---|---|---|
+| 1 | Retrying a partial `/tasks` failure matched by **title**, so same-titled tasks were re-created | `failed[]` carries `index`; the app retries `CreateResult.failedOf(sent)` by position. Regression tests: Worker `index.test.ts` and app `TasksApiTest` |
+| 2 | No rate limit; `APP_TOKEN` ships in the APK, so a leaked token could drain the account's Workers AI free allowance (~35 five-minute requests) or flood the Inbox | **Strict per-credential quota**, Durable Object `src/quota.ts` (SQLite, synchronous): **10 requests/min** and **30 `/extract` per rolling 24 h** (≤ ~8.5k neurons). Checked right after auth, so unauthenticated requests can't lock you out. The Workers Rate Limiting binding was tried first: it is approximate and per location, and never tripped in 80 test requests. Audio cap lowered from 3 to 1.5 MB. Verified live: 10 × 404 then 429 with `Retry-After`. |
+| 3 | An over-long title or notes dropped the whole task silently | Truncated to 200 / 2,000 characters instead (test added) |
+| 4 | A blank `WORKER_URL` crashed the app at ViewModel creation | `TasksApi` is created lazily; `record()` shows the config error |
+| 5 | Error logs could include transcript text (JSON parse errors quote model output; TickTick error bodies) | `errorSummary()`: parse errors logged by name only, other messages capped; `TickTickError` carries only the status |
+| 6 | Review screen hid notes and priorities 1 and 3, which were still sent | Shows date · Low/Medium/High plus notes (up to 4 lines) |
+| + | A stalled gpt-oss call kept running (and using neurons) after the 25 s fallback | `ai.run(..., { signal: AbortSignal.timeout(25_000) })` |
+| + | `allowBackup="true"` | `false` |
+
+**Accepted for a personal app:**
+- Blocking OkHttp calls aren't cancelled when the app is swiped away, so in-flight results are lost.
+- An unexpected response shape throws `SerializationException`, which is uncaught.
+- A double Stop leaves an idle service running.
+- DST-gap date math is off for some zones (Asia/Kolkata has no DST).
+- The TickTick scope includes `tasks:read`.
+- `APP_TOKEN` is readable from the APK. Rotate it if the APK leaks: `bun run wrangler secret put APP_TOKEN`, update `local.properties`, reinstall.
+
+Git history scanned: no secret values are present in any commit.
 
 ### Phase 3: real watch
 - Pair over Wi-Fi debugging and install with `./gradlew installDebug`.
