@@ -10,9 +10,8 @@
 //   bun run history --purge-older-than 90d [--yes]
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { query, sqlString, wrangler } from "./remote";
 
-const WRANGLER = new URL("./wrangler.sh", import.meta.url).pathname;
-const DB = "unramble";
 const BUCKET = "unramble-audio";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -35,23 +34,6 @@ type Row = {
   created: number;
   snippet?: string;
 };
-
-function wrangler(args: string[]): string {
-  const run = Bun.spawnSync([WRANGLER, ...args], { stdout: "pipe", stderr: "pipe" });
-  if (run.exitCode !== 0) {
-    console.error(run.stderr.toString() || run.stdout.toString());
-    process.exit(run.exitCode ?? 1);
-  }
-  return run.stdout.toString();
-}
-
-/** SQL string literal: wrangler d1 execute has no bound parameters, so escape quotes. */
-const sqlString = (value: string) => `'${value.replaceAll("'", "''")}'`;
-
-function query<T>(sql: string): T[] {
-  const out = wrangler(["d1", "execute", DB, "--remote", "--json", "--command", sql]);
-  return (JSON.parse(out.slice(out.indexOf("["))) as { results: T[] }[])[0]!.results;
-}
 
 const SELECT = `
   SELECT d.*,

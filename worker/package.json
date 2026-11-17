@@ -5,6 +5,7 @@
   "scripts": {
     "auth": "bun scripts/auth.ts",
     "history": "bun scripts/history.ts",
+    "vocab": "bun scripts/vocab.ts",
     "dev": "./scripts/wrangler.sh dev",
     "deploy": "./scripts/wrangler.sh deploy",
     "wrangler": "./scripts/wrangler.sh",

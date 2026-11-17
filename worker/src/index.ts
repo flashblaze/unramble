@@ -3,6 +3,7 @@ import { extractTasks, isSilence, transcribe } from "./extract";
 import { isValidTimeZone } from "./dates";
 import { consumeHistory, purgeHistory, saveAudio, sendHistory, type DictationMessage } from "./history";
 import { CreateTasksBody } from "./tasks";
+import { loadVocabulary, whisperPrompt } from "./vocabulary";
 import { createTask, TickTickAuthError } from "./ticktick";
 
 /** The app records ≤ 5 min of 24 kbps Opus (~900 KB); headroom for VBR, but far below abuse-sized uploads. */
@@ -79,18 +80,19 @@ async function handleExtract(request: Request, env: Env, ctx: ExecutionContext, 
     audioBytes: audio.byteLength,
   };
   try {
+    const vocabulary = await loadVocabulary(env.DB);
     const whisperStart = Date.now();
-    const transcript = await transcribe(env.AI, audio);
+    const transcript = await transcribe(env.AI, audio, whisperPrompt(vocabulary));
     entry.transcript = transcript;
     entry.whisperMs = Date.now() - whisperStart;
-    if (isSilence(transcript)) {
+    if (isSilence(transcript, vocabulary)) {
       entry.outcome = "no_speech";
       console.log(JSON.stringify({ message: "extract", requestId, audioBytes: audio.byteLength, whisperMs: entry.whisperMs, outcome: "no_speech" }));
       return errorResponse(422, "no_speech");
     }
 
     const llmStart = Date.now();
-    const { tasks, model } = await extractTasks(env.AI, transcript, Date.now(), tz);
+    const { tasks, model } = await extractTasks(env.AI, transcript, Date.now(), tz, vocabulary);
     Object.assign(entry, { outcome: "extracted", tasks, model, llmMs: Date.now() - llmStart });
     console.log(
       JSON.stringify({

@@ -13,18 +13,29 @@ const PRIMARY_TIMEOUT_MS = 25_000;
 /** Whisper's usual inventions on silence; a transcript made only of these means nothing was said. */
 const SILENCE_HALLUCINATIONS = /\b(thank you|thanks for watching|you)\b/gi;
 
-export async function transcribe(ai: Ai, audio: Uint8Array): Promise<string> {
+/** `hint` is Whisper's initial_prompt (see vocabulary.ts): biases spelling of names and rare words. */
+export async function transcribe(ai: Ai, audio: Uint8Array, hint?: string): Promise<string> {
   const result = await ai.run(WHISPER, {
     audio: Buffer.from(audio).toString("base64"),
     language: "en",
     vad_filter: true,
     condition_on_previous_text: false,
+    ...(hint ? { initial_prompt: hint } : {}),
   });
   return result.text.trim();
 }
 
-export function isSilence(transcript: string): boolean {
-  return transcript.replace(SILENCE_HALLUCINATIONS, "").replace(/[\W_]+/g, "") === "";
+/**
+ * True when the transcript holds no real speech. With a vocabulary hint, Whisper can echo the prompt on
+ * silence ("Vocabulary: Unramble, TickTick."), so those words alone also count as silence.
+ */
+export function isSilence(transcript: string, vocabulary: string[] = []): boolean {
+  let rest = transcript.replace(SILENCE_HALLUCINATIONS, "");
+  if (vocabulary.length) {
+    const escaped = ["vocabulary", ...vocabulary].map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    rest = rest.replace(new RegExp(`\\b(${escaped.join("|")})\\b`, "gi"), "");
+  }
+  return rest.replace(/[\W_]+/g, "") === "";
 }
 
 // Field order matters: the model quotes the speaker before converting (see PLAN.md, Phase 0).
@@ -50,8 +61,11 @@ const TASKS_SCHEMA = {
   required: ["tasks"],
 };
 
-export function systemPrompt(now: number, tz: string): string {
+export function systemPrompt(now: number, tz: string, vocabulary: string[] = []): string {
   const clock = promptClock(now, tz);
+  const spellings = vocabulary.length
+    ? `\nCorrect spellings of names and words the speaker uses (the transcript may misspell them): ${vocabulary.join(", ")}.`
+    : "";
   return `You extract to-do tasks from a voice dictation transcript. The speaker is dictating their own tasks.
 
 Current local time: ${clock.now} (${tz}).
@@ -70,7 +84,7 @@ For each task, fill fields in this order:
 5. priority: 0 if priority_said is omitted. Otherwise 5 for urgent / ASAP / important / high, 3 for medium, 1 for low.
 6. notes: only for extra details such as item lists. Otherwise omit.
 
-Which tasks: one per distinct action the speaker must do or wants to be reminded of. Skip filler, thinking aloud, things other people will do, anything the speaker dismisses ("never mind", "not a task"), and a stray "thank you". If the speaker corrects themselves, keep only the corrected version.
+Which tasks: one per distinct action the speaker must do or wants to be reminded of. Skip filler, thinking aloud, things other people will do, anything the speaker dismisses ("never mind", "not a task"), and a stray "thank you". If the speaker corrects themselves, keep only the corrected version.${spellings}
 No tasks: return {"tasks": []}.`;
 }
 
@@ -92,9 +106,9 @@ export interface Extraction {
 }
 
 /** gpt-oss-120b first; on an error, malformed JSON or a stall past 25 s, one retry with llama-3.3-70b. */
-export async function extractTasks(ai: Ai, transcript: string, now: number, tz: string): Promise<Extraction> {
+export async function extractTasks(ai: Ai, transcript: string, now: number, tz: string, vocabulary: string[] = []): Promise<Extraction> {
   const messages = [
-    { role: "system" as const, content: systemPrompt(now, tz) },
+    { role: "system" as const, content: systemPrompt(now, tz, vocabulary) },
     { role: "user" as const, content: transcript },
   ];
   try {
