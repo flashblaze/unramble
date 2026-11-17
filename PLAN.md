@@ -353,6 +353,81 @@ Verified on the deployed Worker:
 **Finding (the first thing history surfaced):** for the 30 s test clip, "by Thursday evening" came back as **Sat 21 Nov** in 2 of 3 runs (Thursday is 19 Nov), with gpt-oss-120b at `reasoning_effort: low`.
 **Fixed ✅** by `alignWeekday()` in `src/dates.ts`, applied in `tasksFromModel()` to both models' output. When `when_said` names exactly one weekday and `due` falls on another day, the Worker moves the date to the first such weekday after today (in the watch's zone) and keeps the time. It leaves the date alone for arithmetic (`before`/`after`/`week`/`days`/`last`), explicit dates (ordinals, month names), and several weekdays. Covered by 5 tests, including the exact regression. Live: the same clip now gives Thu 19 Nov 18:00 in 3/3 runs (18.8–20.4 s).
 
+### Phase 2c: vocabulary hints + playing recordings on the watch (planned)
+
+#### Part 1: vocabulary hints
+Problem: Whisper doesn't know words it rarely hears. "Unramble" came out as "and ramble"; names and jargon (people, products, places) get respelled.
+
+**Mechanism:**
+- Whisper on Workers AI accepts `initial_prompt` (confirmed in the generated types). Text there acts as preceding context and biases spelling toward the words it contains.
+- The Worker sends `"Vocabulary: Unramble, TickTick, Priya, …."`. Whisper's prompt window is ~224 tokens, so cap the list at ~150 words and send the most recently added first.
+- The same list goes into the extraction prompt as "Correct spellings of names the speaker uses: …", so task titles also use the right spelling when Whisper still slips.
+
+**Storage: D1 table `vocabulary`** (migration `0002_vocabulary.sql`: `word TEXT PRIMARY KEY COLLATE NOCASE, added_at INTEGER`). It's next to history, editable from the laptop, and doesn't need a redeploy.
+- The Worker reads it on `/extract` with one indexed query, cached in module memory for 5 minutes so most requests don't touch D1.
+- If D1 fails, Whisper runs without the hint and the dictation is never blocked.
+- Considered and rejected: a `vars` entry, which needs a redeploy for every new word; KV, which would be a second store for one list.
+
+**Managing it:**
+- `bun run vocab add "Unramble" "Priya Sharma"`, `bun run vocab remove …`, `bun run vocab list`.
+- `bun run vocab suggest` lists capitalised words from your history transcripts that aren't in the list yet, for one-keystroke adding.
+- The list is seeded with `Unramble`, `TickTick`.
+- The watch has no UI for this; typing on a watch is the wrong place.
+
+**Tests:**
+- The prompt is built with a cap and in the right order.
+- A D1 failure still transcribes.
+- The extraction prompt includes the list.
+- Live: the "Remind me to test Unramble…" phrasing transcribes as "Unramble" (A/B with the hint off and on, 3 runs each).
+
+#### Part 2: play saved recordings on the watch
+Goal: an **History** button on the record screen opens a list of recent dictations (time, first words, how many tasks you kept). Tapping one shows the transcript and tasks, and **Play** plays the audio on the watch speaker.
+
+**The decision this needs** (security vs. where the audio comes from):
+
+| Option | How | Trade-off |
+|---|---|---|
+| **A. Stream from R2 through the Worker** | New authenticated `GET` endpoints read D1 and stream R2 | Shows everything ever saved (until the 365-day expiry), including dictations from before a reinstall. **But it adds the HTTP read path that Phase 2b deliberately left out:** the `APP_TOKEN` is extractable from the APK, so anyone holding the APK could then *listen to your recordings and read your transcripts*, not just add dictations. |
+| **B. Keep recent recordings on the watch** | The app keeps the last 20 recordings plus their transcript and tasks in app-private storage (`filesDir`, ~3–8 MB). `/extract` already returns everything needed, and `/tasks` tells the app what you kept. | No new server endpoints and no new attack surface. Works offline and plays instantly. Only shows the last 20 made *on this install*; older ones stay in R2 for `bun run history --play` on the laptop. |
+| C. A then B | B now, A later behind its own revocable `HISTORY_READ_TOKEN` | Same exposure as A once added; a separate token only makes it easy to revoke reads without breaking dictation. |
+
+**Recommendation: B.** It shows exactly what you'd want on a wrist (recent dictations), adds zero exposure, and needs no server change. Choose A if you specifically want older recordings on the watch and accept the APK-token risk.
+
+**Plan for B (app-only):**
+- `HistoryStore.kt`:
+  - Each entry is `filesDir/history/<dictationId>/{audio.ogg, entry.json}`.
+  - `entry.json` holds `{id, createdAt, transcript, proposed, kept, created}`.
+  - On save, prune to the newest 20.
+  - Writes are atomic (temp file + rename).
+- **Capture:**
+  - After a successful `/extract`, the recording is *moved* (not copied) into the store instead of being deleted, and the entry is written.
+  - After `/tasks`, update `kept`/`created`.
+  - A "No speech heard" recording is stored too, marked, so you can hear what went wrong.
+- **Playback:** Media3 `ExoPlayer` (it plays Ogg/Opus) on a local file.
+  - Check for audio output first with `AudioManager.getDevices(GET_DEVICES_OUTPUTS)`: watch speaker or Bluetooth headset.
+  - Request audio focus, pause when leaving the screen, and use the crown for volume.
+- **UI (Wear M3):**
+  - The record screen gains a small **History** button.
+  - The list is a `TransformingLazyColumn` of cards: "Today 08:53 · Buy milk, Call mom · ✓2".
+  - The detail screen has a play/pause button with a progress ring, plus the transcript and tasks (✓ kept / · dropped).
+  - Swipe-to-dismiss goes back.
+- **Deleting:** a long-press on an entry offers **Delete from watch** (local only; R2/D1 stay unchanged). An "Erase all on watch" action sits at the end of the list.
+- **Tests:**
+  - Unit tests for `HistoryStore`: prune to 20, update kept, survives a missing file, and the JSON round-trip.
+  - Emulator: dictate → History shows it → Play reaches `STATE_READY` and moves position (checked via logcat).
+  - Real watch: you listen to one recording on the speaker.
+
+**Plan for A (only if chosen), on top of B's UI:**
+- `GET /history?before=<cursor>&limit=20` returns D1 rows.
+- `GET /history/<id>/audio` streams the R2 object, with `Range` support so ExoPlayer can seek.
+- Both sit behind auth and the quota (reads would get their own budget, e.g. 60/min). A `HISTORY_READ` var turns them off.
+- The app adds the `Authorization` header on ExoPlayer's HTTP source and caches the downloaded audio.
+- README privacy section: "a leaked app token can now read your history". Recommended together with a separate `HISTORY_READ_TOKEN` so reads can be revoked independently.
+
+**Done when:**
+- **Vocabulary:** "Unramble" is spelled right in ≥ 3/3 live runs with the hint (it was wrong without it), and `bun run vocab` works.
+- **Playback:** on the Galaxy Watch8 you open History, see your last dictations, and hear one through the speaker. Tests pass; README and PLAN are updated.
+
 ### Phase 3: real watch (in progress, started 2026-11-17)
 Device: Galaxy Watch8 **SM-L330**, Wear OS 6 / Android 16 (API 36, One UI 8 Watch, build `BP2A.250325.020.L330XXS2AZF4`), 480×480 at 340 dpi, `Asia/Kolkata`. Paired over Wireless debugging; the app was installed with `ANDROID_SERIAL=<serial> ./gradlew :app:installDebug` (an old `dev.flashblaze.watchapp` build was uninstalled).
 
