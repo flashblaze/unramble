@@ -143,17 +143,39 @@ Gotchas:
 - A first deploy with `secrets.required` needs `bun run deploy -- --secrets-file .dev.vars`, because a Worker that doesn't exist yet can't take `secret put`.
 - `.dev.vars` holds `APP_TOKEN` and `TICKTICK_TOKEN`; `.env` holds the TickTick client ID and secret. Both are gitignored.
 
-### Phase 2: watch app
-- Manifest: `RECORD_AUDIO`, `INTERNET`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MICROPHONE`, `POST_NOTIFICATIONS`. Declare a `<service android:foregroundServiceType="microphone">`.
-- `RecorderService` (foreground service, microphone type): MediaRecorder `OutputFormat.OGG` + `AudioEncoder.OPUS`, 16 kHz mono, 24 kbps, writing to `cacheDir`, auto-stop at 5:00. Starts only from the visible Record button, as Android 14+ requires. A Wear **Ongoing Activity** (`androidx.wear:wear-ongoing`) shows a recording chip on the watch face so it keeps running with the screen off.
-- Screens (Compose for Wear OS Material3, one ViewModel with a `StateFlow` state machine):
-  `Idle → Recording(timer, Stop, Cancel) → Uploading → Review(list of tasks with toggles, "Create N") → Done(count + haptic) | Error(message, Retry)`
-  - Review shows the title, plus the due date when there is one. Tapping a row toggles it. "Create" is disabled when nothing is selected.
-  - Empty result → "No tasks heard" with "Record again".
-- Networking: OkHttp, 120 s timeout on `/extract`, body = recorded file, `?tz=${ZoneId.systemDefault()}`. Map error codes to messages (`no_speech` → "No speech heard", `ticktick_auth_expired` → "TickTick login expired: run `bun run auth` in worker/"). The audio file is kept until `/tasks` succeeds, so Retry never needs a re-recording, and Retry for `/tasks` resends only `failed`. `Authorization: Bearer ${BuildConfig.APP_TOKEN}`, base URL from `BuildConfig.WORKER_URL`; both come from `local.properties`, which is gitignored.
-- Microphone permission: ask on first tap. If denied, explain on screen and offer to open Settings.
+### Phase 2: watch app ✅ done 2026-11-17
+Code in `app/src/main/java/dev/flashblaze/watchapp/`:
 
-**Done when**, on the emulator (host mic), saying "buy milk and call mom tomorrow at 6 pm" gives a review list of 2 tasks, and Create puts both in the TickTick Inbox with the right due date.
+| File | What |
+|---|---|
+| `RecorderService.kt` | Foreground service (type microphone): MediaRecorder Ogg/Opus, 16 kHz mono, 24 kbps → `cacheDir/dictation.ogg`, auto-stop at 5:00, Wear Ongoing Activity chip with a stopwatch. Publishes `Recorder.state` (Idle / Recording / Finished / Failed) so the UI resumes after screen-off or activity recreation. |
+| `TasksApi.kt` | OkHttp + kotlinx.serialization client for `/extract` and `/tasks` (120 s timeout); Worker errors → `ApiException(code)` |
+| `MainViewModel.kt` | State machine `Idle → Recording → Uploading → Review → Creating → Done`, plus `NothingHeard`, `Error(retry)`, `MicPermissionDenied`. Keeps the audio until tasks are created, so Retry never re-records; a partial `/tasks` failure keeps only the failed tasks. |
+| `MainActivity.kt` | Compose for Wear OS Material3 screens. Every screen is a `TransformingLazyColumn`, so text scrolls on the round display. |
+
+Config: `voiceTasks.workerUrl` and `voiceTasks.appToken` in `local.properties` (gitignored) → `BuildConfig`. Unit tests: `./gradlew :app:testDebugUnitTest` (`TasksApiTest`: request body and error mapping).
+
+**Verified on the Wear OS 6 emulator:**
+- Mic and notification permission prompts.
+- Foreground service running with type microphone (`0x80`), stopwatch notification.
+- Recording → upload → Review in about 5–9 s for a 4 s phrase.
+- "No speech heard" path.
+- Acceptance: "Buy milk, and call mom tomorrow at 6 PM" → Review lists **Buy milk** and **Call mom · Tomorrow 18:00** → Add 2 → "Added 2 tasks to TickTick". Read back from TickTick: Call mom `2026-11-18T12:30Z` (18:00 IST, timed), Buy milk undated, both in Inbox. Test tasks deleted afterwards.
+
+Fixed along the way:
+- **`/tasks` returned `bad_request`:** kotlinx.serialization skips default values, so `priority: 0` was never sent. Fixed with `encodeDefaults = true` (nulls are still omitted via `explicitNulls = false`), and a regression test added.
+- Wear M3 `TextButton` is a small round icon button, so labels wrapped. Secondary actions now use `CompactButton`.
+- The recording screen has a big central Stop button instead of an edge button.
+- `Status.StopwatchPart` counts from an `elapsedRealtime()` base (checked in the bytecode), not wall-clock time.
+
+UI notes: the edge button (e.g. "Add 2") collapses while the list can still scroll and appears at the end, the standard Wear pattern; scroll with the crown/bezel. "Buy milk and call mom tomorrow at 6 PM" sometimes gives *both* tasks the date. The sentence is ambiguous, and the review screen shows it.
+
+**Emulator testing notes** (this machine): the emulator can't open PipeWire/PulseAudio/ALSA (`Could not init 'pa' audio driver`), so host-mic tests are impossible. Instead, `worker/spike/inject_audio.py --burst` streams a WAV into the virtual mic through gRPC `injectAudio`. Start the emulator with `-grpc 8554 -grpc-use-token`; plain `-grpc` listens on all interfaces without auth. Gotchas:
+- Injecting when no guest app is recording **crashes the emulator** (SIGSEGV).
+- Injection is flaky: roughly 1 in 3 recordings receive the audio.
+- A cold boot shows the "Hello" onboarding over the app; swipe up once.
+
+`worker/spike/tap.sh "<label>"` taps a UI node by its text.
 
 ### Phase 3: real watch
 - Pair over Wi-Fi debugging and install with `./gradlew installDebug`.

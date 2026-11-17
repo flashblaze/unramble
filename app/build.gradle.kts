@@ -1,6 +1,14 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.kotlin.serialization)
+}
+
+// Worker endpoint and bearer token live in the gitignored local.properties (see PLAN.md).
+val localProperties = Properties().apply {
+    rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use(::load)
 }
 
 android {
@@ -13,6 +21,8 @@ android {
         targetSdk = 36 // Wear OS 6 (Galaxy Watch8)
         versionCode = 1
         versionName = "1.0"
+        buildConfigField("String", "WORKER_URL", "\"${localProperties.getProperty("voiceTasks.workerUrl", "")}\"")
+        buildConfigField("String", "APP_TOKEN", "\"${localProperties.getProperty("voiceTasks.appToken", "")}\"")
     }
 
     buildTypes {
@@ -23,6 +33,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 
@@ -35,5 +46,14 @@ dependencies {
     implementation(libs.androidx.wear.compose.material3)
     implementation(libs.androidx.wear.compose.foundation)
     implementation(libs.androidx.wear.compose.ui.tooling)
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation(libs.androidx.lifecycle.runtime.compose)
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.wear.ongoing)
+    implementation(libs.okhttp)
+    implementation(libs.kotlinx.serialization.json)
     debugImplementation(libs.androidx.ui.tooling)
+    testImplementation(libs.junit)
+    testImplementation(libs.okhttp.mockwebserver)
+    testImplementation(libs.kotlinx.coroutines.test)
 }
