@@ -340,11 +340,11 @@ Device: Galaxy Watch8 **SM-L330**, Wear OS 6 / Android 16 (API 36, One UI 8 Watc
 |---|---|
 | Install, launch, permissions | ✅ Runs; record screen renders at 480×480 |
 | Real-voice extraction (quiet room) | ✅ 2 dictations: 150 KB / 59 words and 155 KB / 88 words, 3 tasks each, gpt-oss-120b (no fallback), Whisper 2.7 / 2.3 s, LLM 12.1 / 10.6 s |
-| Add → TickTick from the watch | pending |
-| Recording continues with the screen off (Ongoing Activity chip) | pending |
-| Upload over Bluetooth via the phone (watch Wi-Fi off) | pending |
+| Add → TickTick from the watch | ✅ "Remind me to test Unramble tomorrow at nine a.m., it's high priority … also water the plants" → 2 tasks created: due 2026-11-18 03:30Z (09:00 IST, timed), **priority 5**; "Water the plants" undated. Whisper wrote "Unramble" as "and ramble" (unknown word). |
+| Recording continues with the screen off (Ongoing Activity chip) | ✅ The sentence said ~15 s after covering the watch ("water the plants") was captured |
+| Upload over Bluetooth via the phone (watch Wi-Fi off) | ✅ 43 KB / 16 words → "Book a cab", tomorrow 09:00, created. Whisper 1.5 s, LLM 8.1 s |
 | 5-minute recording: auto-stop, upload, processing | pending |
-| 5 dictations in different conditions | 2 / 5 (quiet) |
+| 5 dictations in different conditions | 4 / 5 done (quiet ×3, Bluetooth ×1); walking / outdoors / noisy pending |
 | Battery | 82% at start, 81% after install and 2 dictations |
 
 Note: Wear OS turns Wi-Fi off when the screen is off and the phone is nearby, so the ADB link (Wireless debugging) drops. The app is unaffected and keeps talking to the Worker through the phone. Reopen Developer options → Wireless debugging to reconnect ADB.
