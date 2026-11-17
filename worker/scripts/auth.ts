@@ -68,7 +68,12 @@ const server = Bun.serve({
 });
 
 console.log(`Open this URL to authorize TickTick:\n${authorizeUrl}`);
-Bun.spawn(["xdg-open", authorizeUrl], { stdout: "ignore", stderr: "ignore" });
+const opener = process.platform === "darwin" ? ["open"] : process.platform === "win32" ? ["cmd", "/c", "start", ""] : ["xdg-open"];
+try {
+  Bun.spawn([...opener, authorizeUrl], { stdout: "ignore", stderr: "ignore" });
+} catch {
+  // No browser opener available (e.g. over SSH): the URL above is enough.
+}
 
 let token: string;
 try {
@@ -83,6 +88,9 @@ const upload = Bun.spawn([new URL("./wrangler.sh", import.meta.url).pathname, "s
   stderr: "inherit",
 });
 if ((await upload.exited) !== 0) {
-  console.error("Uploading TICKTICK_TOKEN to the Worker failed; retry with: bun run wrangler secret put TICKTICK_TOKEN");
+  console.error(
+    "Uploading TICKTICK_TOKEN to the Worker failed. If the Worker isn't deployed yet, that's expected: " +
+      "deploy once with `bun run deploy -- --secrets-file .dev.vars`. Otherwise retry with: bun run wrangler secret put TICKTICK_TOKEN",
+  );
   process.exit(1);
 }
