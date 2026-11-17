@@ -1,13 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Unramble launcher icon. Source of truth: docs/logo/unramble.svg -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="48dp"
     android:height="48dp"
-    android:viewportWidth="48"
-    android:viewportHeight="48">
+    android:viewportWidth="1024"
+    android:viewportHeight="1024">
     <path
-        android:fillColor="#FF3DDC84"
-        android:pathData="M24,0a24,24 0,1 1,0 48a24,24 0,1 1,0 -48z" />
+        android:fillColor="#FFE8DEF8"
+        android:pathData="M0,0H1024V1024H0Z" />
     <path
-        android:fillColor="#FFFFFFFF"
-        android:pathData="M24,12a12,12 0,1 1,0 24a12,12 0,1 1,0 -24zM24,15a9,9 0,1 0,0 18a9,9 0,1 0,0 -18zM22.5,17h3v8h-3zM22.5,22h7v3h-7z" />
+        android:strokeColor="#FF21005D"
+        android:strokeWidth="80"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M241 600C332 600 455 534 455 432C455 377 416 341 368 341C321 341 282 378 282 432C282 530 422 633 492 683L783 387" />
 </vector>

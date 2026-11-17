@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>Unramble</title>
+  <!-- Full-bleed background; launchers mask this to a circle. -->
+  <rect width="1024" height="1024" fill="#E8DEF8"/>
+  <!-- One stroke: a rambling loop that resolves into a tick. Fits inside the central 66% circle. -->
+  <path d="M241 600C332 600 455 534 455 432C455 377 416 341 368 341C321 341 282 378 282 432C282 530 422 633 492 683L783 387" fill="none" stroke="#21005D" stroke-width="80" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
