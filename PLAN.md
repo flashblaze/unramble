@@ -203,72 +203,135 @@ A read-only security audit and a code review found no critical or high issues. F
 
 Git history scanned: no secret values are present in any commit.
 
-### Phase 2b: transcript history (planned)
-Goal: keep every dictation so you can look back at what you said, what the model extracted, and what you actually added.
+### Phase 2b: dictation history: transcripts + audio (planned)
+Goal: keep every dictation (the **audio**, the **transcript**, what the model **proposed**, what you **kept**, and what TickTick **created**) so you can look back later, without ever slowing down or breaking the main flow. Workers Paid plan.
 
-**Storage decision: D1.**
+**Decision: audio → R2 (written directly in the background), records → Queue → D1.**
 
-| Option | Fit |
+| Option | Verdict |
 |---|---|
-| **D1** ✅ | Small text rows you list by date and search. Full SQL; **FTS5** full-text search; dashboard console; `wrangler d1 execute` from the CLI; migrations; **Time Travel** restore to any minute in the last 30 days. Free tier: 5 GB, 100k rows written and 5M rows read per day. |
-| R2 | Object storage for blobs: no queries, and listing only by key prefix. It's the right place for *audio*, which we don't keep. Possible later as an opt-in, referenced from a D1 row (`audio/<id>.ogg`) with a lifecycle rule to expire it. |
-| Durable Object (SQLite) | `Quota` already uses one, but its data can only be reached through Worker code (no console, CLI or backups), and it would couple history to the rate limiter. D1 is SQLite with the tooling around it. |
+| **D1** for records ✅ | Text rows you list and search: SQL, FTS5 full-text search, dashboard console, `wrangler d1 execute`, migrations, Time Travel restore (30 days). |
+| **R2** for audio ✅ | Blob storage, private by default, lifecycle rules for expiry. ~0.4 MB per dictation. |
+| **Queues** for D1 writes ✅ | Durable, at-least-once, automatic retries (`max_retries`), dead-letter queue, batching. Producer `send()` is a few ms and runs after the response. |
+| Workflows ❌ (for now) | Built for multi-step orchestration (sleeps, waits, per-step retries). Here there's one idempotent write per event; a Workflow instance per dictation is overhead. Worth it later for real pipelines (e.g. re-transcribe, daily digest), which can consume the same R2 + D1 data. |
+| Audio *through* a queue/workflow ❌ | Too big: Queue messages max **128 KB**, Workflow params/step results max **1 MiB**, and audio is up to 1.5 MB. Audio must go to R2 directly; messages carry the R2 key. |
+| Durable Object for records ❌ | Only reachable through Worker code: no console, CLI or backups. |
+| Plain `ctx.waitUntil` D1 writes ❌ | No retries: a transient D1 error or a deploy mid-flight loses the record. |
 
-**Schema** (`worker/migrations/0001_dictations.sql`):
+**Flow: nothing on the watch's critical path waits for storage**
+```mermaid
+sequenceDiagram
+  participant W as Watch
+  participant CF as Worker (fetch)
+  participant R2 as R2 unramble-audio
+  participant Q as Queue unramble-history
+  participant C as Worker (queue consumer)
+  participant D1 as D1 unramble
+  W->>CF: POST /extract (audio)
+  CF-)R2: put audio/YYYY/MM/DD/<id>.ogg (waitUntil, starts immediately, runs alongside Whisper)
+  CF->>CF: Whisper + LLM (unchanged)
+  CF-->>W: {dictationId, transcript, tasks}
+  CF-)Q: send "dictation" {id, transcript, tasks, outcome, timings, audio: key or error} (waitUntil, after the R2 put settles)
+  W->>CF: POST /tasks {dictationId, tasks}
+  CF-->>W: {created, failed}
+  CF-)Q: send "submission" {id, dictationId, submitted, created, failed} (waitUntil)
+  Q->>C: batch (≤ 10 msgs / 5 s)
+  C->>D1: idempotent INSERT … ON CONFLICT DO NOTHING (batch)
+  C-->>Q: ack, or retry(delay) → DLQ after 10 attempts
+```
+Guarantees:
+- **Main flow unchanged.** The request never `await`s R2, the queue or D1. Each of those runs in `ctx.waitUntil()`, which gets up to 30 s after the response; a 1 MB R2 put takes well under 1 s. Every background chain catches its own errors and logs `errorSummary` only, so a storage failure can't produce a 500 or add latency.
+- **Audio is saved even when processing fails.** The R2 put starts as soon as the body is read, *before* Whisper. If Whisper or the LLM throws, the queue message records `outcome: "failed"` plus the error type. Failed dictations are the ones most worth listening to.
+- **R2 put retries** up to 3× with backoff inside `waitUntil`. If it still fails, the message records `audio_error`, so the row exists without audio.
+- **Order and duplicates don't matter.** Submissions live in their own table keyed by a per-call `submissionId`, so a "submission" arriving before its "dictation", or delivered twice, is harmless: everything is `INSERT … ON CONFLICT DO NOTHING`, joined at read time.
+- **Message size:** a transcript is ≤ ~8 KB for 5 min of speech, plus ≤ 20 tasks, so well under 128 KB (usually one 64 KB billing unit).
+
+**Schema** (`worker/migrations/0001_history.sql`):
 ```sql
 CREATE TABLE dictations (
   id             TEXT PRIMARY KEY,      -- UUID, returned to the watch as dictationId
   created_at     INTEGER NOT NULL,      -- unix ms
   tz             TEXT NOT NULL,
-  outcome        TEXT NOT NULL,         -- 'extracted' | 'no_speech'
-  transcript     TEXT NOT NULL,
-  audio_bytes    INTEGER NOT NULL,
-  model          TEXT,                  -- which LLM answered (null for no_speech)
+  outcome        TEXT NOT NULL,         -- 'extracted' | 'no_speech' | 'failed'
+  error          TEXT,                  -- error type when failed (never message text)
+  transcript     TEXT,                  -- null if Whisper failed
   extracted_json TEXT,                  -- tasks the model proposed
-  submitted_json TEXT,                  -- tasks you kept and sent to TickTick
-  created_count  INTEGER,               -- tasks TickTick actually created (incl. retries)
+  model          TEXT,
+  audio_key      TEXT,                  -- R2 key; null if the put failed
+  audio_bytes    INTEGER NOT NULL,
+  audio_error    TEXT,
   whisper_ms     INTEGER,
   llm_ms         INTEGER
 );
 CREATE INDEX dictations_created_at ON dictations (created_at DESC);
--- Full-text search over transcripts, kept in sync by triggers (insert / delete / update of transcript).
+CREATE TABLE submissions (
+  id             TEXT PRIMARY KEY,      -- per /tasks call: idempotency for at-least-once delivery
+  dictation_id   TEXT NOT NULL,
+  created_at     INTEGER NOT NULL,
+  submitted_json TEXT NOT NULL,         -- tasks you kept and sent
+  created_count  INTEGER NOT NULL,
+  failed_count   INTEGER NOT NULL
+);
+CREATE INDEX submissions_dictation ON submissions (dictation_id);
+-- Full-text search over transcripts, kept in sync by insert/delete triggers.
 CREATE VIRTUAL TABLE dictations_fts USING fts5 (transcript, content = 'dictations', content_rowid = 'rowid');
 ```
-Estimated size: about 2 KB per dictation, so 1 GB holds about 500k dictations. Writes are about 5 rows per dictation (insert, update, search-index entries), so 30 a day is roughly 150 rows against the 100k/day free allowance.
 
-**Worker**
-- `wrangler.jsonc`: `d1_databases: [{ binding: "DB", database_name: "unramble", migrations_dir: "migrations" }]` with no `database_id`. Wrangler provisions the database on the first deploy and writes the ID back, so forks get their own database automatically. Apply migrations with `wrangler d1 migrations apply unramble --remote`.
-- `src/history.ts`: `recordExtraction()` and `recordSubmission()`. Both run in `ctx.waitUntil()` after the response is sent: a D1 failure is logged (`errorSummary`) and never fails or slows a dictation.
-- `/extract`: generates `dictationId`, records the transcript, extracted tasks, model and timings (including `no_speech` outcomes), and returns `dictationId` in the response.
-- `/tasks`: accepts an optional `dictationId`. On the first submission it stores `submitted_json`, then `created_count = COALESCE(created_count, 0) + created`, so retries add up instead of overwriting.
-- **No HTTP read endpoint.** Reading history needs your Cloudflare account, so a leaked `APP_TOKEN` can still only write dictations, not read them.
-- Settings, as `vars` in `wrangler.jsonc`:
-  - `SAVE_TRANSCRIPTS = "true"`: forks can turn history off.
-  - `HISTORY_RETENTION_DAYS = "0"` (keep forever). Above 0, a daily cron (`scheduled` handler, `triggers.crons`) deletes older rows, and the triggers keep the search index in step.
+**Worker changes**
+- `wrangler.jsonc` (resources without IDs are auto-provisioned on the first deploy, and the IDs are written back):
+  - `r2_buckets: [{ binding: "AUDIO" }]` → bucket `unramble-audio`, private (no r2.dev, no custom domain).
+  - `d1_databases: [{ binding: "DB", database_name: "unramble", migrations_dir: "migrations" }]`.
+  - `queues.producers: [{ binding: "HISTORY", queue: "unramble-history" }]`.
+  - `queues.consumers: [{ queue: "unramble-history", max_batch_size: 10, max_batch_timeout: 5, max_retries: 10, retry_delay: 30, dead_letter_queue: "unramble-history-dlq" }]`. Create the DLQ once with `wrangler queues create unramble-history-dlq`.
+  - `vars`: `SAVE_HISTORY = "true"` (forks can turn it off), `HISTORY_RETENTION_DAYS = "0"` (0 = keep records forever).
+  - `triggers.crons: ["17 3 * * *"]`: daily purge of D1 rows older than the retention period, when it's set.
+- `src/history.ts`:
+  - `saveAudio()`: R2 put with retries, `customMetadata` = {tz, bytes}.
+  - `enqueueDictation()` / `enqueueSubmission()`: build and `send` the messages.
+  - `consume(batch)`: zod-validate each message, one `DB.batch()` of idempotent inserts, then `ackAll()`. On a D1 error, `retryAll({ delaySeconds })`. A message that fails validation is acked and logged; retrying won't fix it.
+- `src/index.ts`:
+  - `export default { fetch, queue, scheduled }`.
+  - `/extract` generates `dictationId` and returns it.
+  - `/tasks` accepts an optional `dictationId`.
+  - Both register their background chains through `ctx.waitUntil`.
+- Audio retention lives in R2 itself: lifecycle rule `wrangler r2 bucket lifecycle add unramble-audio expire-audio --prefix audio/ --expire-days 365`. The default is **365 days for audio** (voice is the most sensitive data here; change or remove the rule to taste). Transcripts are kept until `HISTORY_RETENTION_DAYS` says otherwise. The listing shows "audio expired" when a row's key no longer exists.
 
-**App:** `Extraction.dictationId` (optional) is kept in the ViewModel and sent with `/tasks`, including on retries. No new screens: the watch is the wrong place to browse history.
+**App changes:** `Extraction.dictationId` is kept in the ViewModel and sent with every `/tasks` call (including retries). No new screens.
 
-**Viewing it later**
-- `bun run history` lists the last 20 dictations: local time, outcome, transcript, proposed titles vs the ones you kept, and how many were created.
-- `bun run history --search "plumber"` searches transcripts with FTS5 and highlights matches.
-- `bun run history --id <uuid>` shows one dictation in full (JSON).
-- `bun run history --purge-older-than 90d` deletes old rows by hand.
-- For anything else: Cloudflare dashboard → Storage & databases → D1 → `unramble` → **Console** for raw SQL, or `bun run wrangler d1 export unramble --remote --output history.sql`.
-- The script runs `wrangler d1 execute --remote --json` through `scripts/wrangler.sh`, with search terms escaped.
+**Viewing it later** (`worker/scripts/history.ts`, via `scripts/wrangler.sh`, `--remote`)
+- `bun run history`: the last 20 dictations, with local time, outcome, 🎧 if audio exists, transcript, proposed vs kept titles, and created count.
+- `bun run history --search "plumber"`: FTS5 search with highlighted matches.
+- `bun run history --id <id>`: one dictation in full (JSON).
+- `bun run history --play <id>`: downloads the audio with `wrangler r2 object get unramble-audio/<key> --remote` to a temp file and plays it with `mpv`/`ffplay`, falling back to `xdg-open`. `--save <id> <file>` keeps it.
+- `bun run history --dlq`: shows messages stuck in the dead-letter queue (they should never appear).
+- `bun run history --purge-older-than 90d`: manual purge of D1 rows and their R2 objects.
+- Dashboard: D1 Console for SQL, the R2 bucket browser for audio. Export with `wrangler d1 export unramble --remote`.
 
-**Privacy and docs**
-- README "Security and privacy" changes from "transcripts are never stored" to "transcripts (text, never audio) are stored in **your** D1 database; turn off with `SAVE_TRANSCRIPTS`".
-- Deleted rows stay recoverable through Time Travel for 30 days.
-- Workers Logs stay transcript-free.
+**Security and privacy**
+- **No HTTP read path.** Reading history or audio needs your Cloudflare account. A leaked `APP_TOKEN` can only *add* dictations, capped by the quota (30 × 1.5 MB/day).
+- R2 is private and encrypted at rest; there is no public URL.
+- Logs stay free of transcripts. Queue messages contain transcripts, but they live only inside your account until consumed (or in the DLQ).
+- README "Security and privacy" changes from "never stored" to: "audio (R2, expires after 365 days) and transcripts (D1) are stored in **your** Cloudflare account; turn off with `SAVE_HISTORY=false`". Deleted D1 rows remain recoverable via Time Travel for 30 days.
 
-**Tests (vitest, migrations applied in the test runtime):**
-- record → fetch round trip
-- FTS search finds a word inside a transcript
-- `/tasks` with a `dictationId` sets `submitted_json` and adds to `created_count` across a retry
-- retention purge deletes only old rows (with the search index still consistent)
-- a D1 failure doesn't change the `/extract` response
+**Cost at personal volume (paid plan, 30 dictations/day worst case)**
 
-**Done when** a dictation on the emulator appears in `bun run history` with its transcript, proposed tasks, kept tasks and `created_count`; `--search` finds it; all tests pass; and the docs reflect the new privacy model.
+| Resource | Usage/month | Included | Cost |
+|---|---|---|---|
+| R2 storage | ~0.4 GB added | 10 GB-month | $0 (≈ 5 GB after a year) |
+| R2 Class A (puts) | ~900 | 1M | $0 |
+| Queues | ~1,800 messages × 3 ops ≈ 5.4k | 1M ops | $0 |
+| D1 | ~10k rows written | 50M | $0 |
+
+**Tests (vitest-plugin: D1 migrations applied, local R2, `createMessageBatch` / `getQueueResult`)**
+- `/extract` response is unchanged when R2, the queue or D1 throw (main flow isolated).
+- A failed extraction still enqueues `outcome: "failed"` with the audio key.
+- Consumer: insert → read back; the same message twice → one row; a submission before its dictation → both rows, joined correctly; a D1 error → `retryAll`; an invalid message → acked + logged.
+- FTS search finds a word in a transcript.
+- The retention cron deletes only old rows.
+- R2 put retry gives up after 3 attempts and records `audio_error`.
+- Latency check on the deployed Worker: `/extract` p50 before vs after stays within noise.
+
+**Done when** a dictation on the emulator shows up in `bun run history` with transcript, proposed and kept tasks and created count; `--play` plays its audio; `--search` finds it; a forced failure (e.g. LLM error) still appears with audio; the DLQ is empty; tests pass; and the README reflects the new privacy model.
 
 ### Phase 3: real watch
 - Pair over Wi-Fi debugging and install with `./gradlew installDebug`.
