@@ -333,7 +333,22 @@ CREATE VIRTUAL TABLE dictations_fts USING fts5 (transcript, content = 'dictation
 
 **Done when** a dictation on the emulator shows up in `bun run history` with transcript, proposed and kept tasks and created count; `--play` plays its audio; `--search` finds it; a forced failure (e.g. LLM error) still appears with audio; the DLQ is empty; tests pass; and the README reflects the new privacy model.
 
-### Phase 3: real watch
+### Phase 3: real watch (in progress, started 2026-11-17)
+Device: Galaxy Watch8 **SM-L330**, Wear OS 6 / Android 16 (API 36, One UI 8 Watch, build `BP2A.250325.020.L330XXS2AZF4`), 480×480 at 340 dpi, `Asia/Kolkata`. Paired over Wireless debugging; the app was installed with `ANDROID_SERIAL=<serial> ./gradlew :app:installDebug` (an old `dev.flashblaze.watchapp` build was uninstalled).
+
+| Check | Result |
+|---|---|
+| Install, launch, permissions | ✅ Runs; record screen renders at 480×480 |
+| Real-voice extraction (quiet room) | ✅ 2 dictations: 150 KB / 59 words and 155 KB / 88 words, 3 tasks each, gpt-oss-120b (no fallback), Whisper 2.7 / 2.3 s, LLM 12.1 / 10.6 s |
+| Add → TickTick from the watch | pending |
+| Recording continues with the screen off (Ongoing Activity chip) | pending |
+| Upload over Bluetooth via the phone (watch Wi-Fi off) | pending |
+| 5-minute recording: auto-stop, upload, processing | pending |
+| 5 dictations in different conditions | 2 / 5 (quiet) |
+| Battery | 82% at start, 81% after install and 2 dictations |
+
+Note: Wear OS turns Wi-Fi off when the screen is off and the phone is nearby, so the ADB link (Wireless debugging) drops. The app is unaffected and keeps talking to the Worker through the phone. Reopen Developer options → Wireless debugging to reconnect ADB.
+
 - Pair over Wi-Fi debugging and install with `./gradlew installDebug`.
 - Check: recording continues with the screen off, upload works over Bluetooth-via-phone and over Wi-Fi alone, a 5-minute recording uploads and processes, and battery use for 10 recordings is acceptable.
 - Mirror with `scrcpy` while testing.
