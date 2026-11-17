@@ -43,6 +43,7 @@ sequenceDiagram
 3. **Task extraction.** The transcript goes to `@cf/openai/gpt-oss-120b`, which has to return JSON matching a schema. Two techniques make the dates reliable:
    - **A calendar in the prompt.** The prompt lists the next 21 days with their weekdays ("Thu 2026-11-19"), plus "in 1/2/3 hours" times, all in the watch's time zone. The model looks dates up instead of calculating them; calculating was where models kept failing.
    - **Quote your words first.** For each task the model must fill in `when_said` (your exact timing words) before `due`, and `priority_said` before `priority`. The Worker then drops any date or priority that has no quote behind it, so the model can't make one up.
+   - **Weekdays are checked in code.** If you name a weekday ("by Thursday evening") and the model's date falls on a different day, the Worker corrects it to the next such day and keeps the time.
 
    Measured on 10 tricky dictations × 3 runs: this setup scored **30/30**, against about 50% for a plain prompt. If gpt-oss errors or stalls for more than 25 s, the Worker retries once with `@cf/meta/llama-3.3-70b-instruct-fp8-fast`.
 4. **Review.** The watch lists every task with its date, priority, and notes, everything that will be sent, each with a checkbox.

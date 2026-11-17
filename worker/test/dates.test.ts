@@ -1,5 +1,36 @@
 import { describe, expect, it } from "vitest";
-import { parseLocalDue, promptClock, toTickTickDate } from "../src/dates";
+import { alignWeekday, parseLocalDue, promptClock, toTickTickDate } from "../src/dates";
+
+describe("alignWeekday", () => {
+  // Tue 17 Nov 2026, 08:47 in Kolkata: the morning the bug showed up in history.
+  const now = Date.UTC(2026, 10, 17, 3, 17);
+  const tz = "Asia/Kolkata";
+
+  it("moves a due date that contradicts the named weekday to that weekday, keeping the time", () => {
+    // Regression: gpt-oss returned Saturday 21 Nov for "by Thursday evening" in 2 of 3 runs.
+    expect(alignWeekday("2026-11-21T18:00", "by Thursday evening", now, tz)).toBe("2026-11-19T18:00");
+    expect(alignWeekday("2026-11-24", "next Friday", now, tz)).toBe("2026-11-20");
+  });
+
+  it("leaves correct dates alone", () => {
+    expect(alignWeekday("2026-11-19T18:00", "by Thursday evening", now, tz)).toBe("2026-11-19T18:00");
+    expect(alignWeekday("2026-11-26", "Thursday", now, tz)).toBe("2026-11-26"); // a later Thursday is still a Thursday
+  });
+
+  it("trusts the model for arithmetic, explicit dates, several weekdays, or no weekday", () => {
+    expect(alignWeekday("2026-11-18", "before Thursday", now, tz)).toBe("2026-11-18");
+    expect(alignWeekday("2026-11-26", "a week before the 3rd of December", now, tz)).toBe("2026-11-26");
+    expect(alignWeekday("2026-11-27", "a week after Friday", now, tz)).toBe("2026-11-27");
+    expect(alignWeekday("2026-11-23", "Monday or Tuesday", now, tz)).toBe("2026-11-23");
+    expect(alignWeekday("2026-11-18T10:00", "tomorrow around ten", now, tz)).toBe("2026-11-18T10:00");
+  });
+
+  it("counts from today in the watch's zone and never picks today itself", () => {
+    // Thu 19 Nov 23:00 in Kolkata is still Thursday there: "Thursday" means next week's.
+    const thursdayNight = Date.UTC(2026, 10, 19, 17, 30);
+    expect(alignWeekday("2026-11-21", "Thursday", thursdayNight, tz)).toBe("2026-11-26");
+  });
+});
 
 const tickTick = (due: string, tz: string) => toTickTickDate(parseLocalDue(due)!, tz);
 

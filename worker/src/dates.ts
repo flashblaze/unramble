@@ -96,6 +96,30 @@ function formatLocal(w: Pick<WallClock, "year" | "month" | "day">): string {
   return `${w.year}-${pad(w.month)}-${pad(w.day)}`;
 }
 
+const SPOKEN_WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+/** Date arithmetic ("before Thursday", "a week after Friday") or an explicit date: trust the model. */
+const NOT_A_PLAIN_WEEKDAY =
+  /\b(before|after|last|week|weeks|fortnight|days?|\d{1,2}(st|nd|rd|th)|january|february|march|april|june|july|august|september|october|november|december)\b/i;
+
+/**
+ * Guard for the model's weekday math. When the speaker named exactly one weekday ("by Thursday
+ * evening", "next Friday") but `due` falls on a different day, move it to the first such weekday
+ * after today (the prompt's rule), keeping the time. Anything else is returned unchanged.
+ */
+export function alignWeekday(due: string, whenSaid: string, now: number, tz: string): string {
+  const named = new Set(whenSaid.toLowerCase().match(/\b(sun|mon|tues|wednes|thurs|fri|satur)day\b/g));
+  const parsed = parseLocalDue(due);
+  if (named.size !== 1 || NOT_A_PLAIN_WEEKDAY.test(whenSaid) || !parsed) return due;
+  const target = SPOKEN_WEEKDAYS.indexOf([...named][0]!);
+  if (new Date(Date.UTC(parsed.year, parsed.month - 1, parsed.day)).getUTCDay() === target) return due;
+
+  const today = wallClock(now, tz);
+  const base = Date.UTC(today.year, today.month - 1, today.day);
+  const daysAhead = ((target - new Date(base).getUTCDay() + 6) % 7) + 1; // 1..7: strictly after today
+  const fixed = new Date(base + daysAhead * DAY_MS).toISOString().slice(0, 10);
+  return fixed + due.slice(10);
+}
+
 export interface PromptClock {
   /** "Mon 2026-11-16 22:29" */
   now: string;

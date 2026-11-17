@@ -18,6 +18,14 @@ describe("tasksFromModel grounding guard", () => {
     ]);
   });
 
+  it("corrects the model's weekday slip on the extraction path (Thursday → Saturday regression)", () => {
+    const output = {
+      tasks: [{ title: "Send quarterly report to Priya", when_said: "by Thursday evening", due: "2026-11-21T18:00", priority_said: "high priority", priority: 5 }],
+    };
+    const now = Date.UTC(2026, 10, 17, 3, 17); // Tue 17 Nov, 08:47 in Kolkata
+    expect(tasksFromModel(output, { now, tz: "Asia/Kolkata" })).toEqual([{ title: "Send quarterly report to Priya", due: "2026-11-19T18:00", priority: 5 }]);
+  });
+
   it("drops a bad date or unknown priority but keeps the task", () => {
     const tasks = tasksFromModel({
       tasks: [{ title: "  Renew passport ", when_said: "next Friday", due: "next Friday", priority_said: "very", priority: 2, notes: " " }],

@@ -110,7 +110,7 @@ export async function extractTasks(ai: Ai, transcript: string, now: number, tz: 
       },
       { signal: AbortSignal.timeout(PRIMARY_TIMEOUT_MS) },
     );
-    return { tasks: tasksFromModel(modelJson(result)), model: PRIMARY_MODEL };
+    return { tasks: tasksFromModel(modelJson(result), { now, tz }), model: PRIMARY_MODEL };
   } catch (error) {
     console.error(JSON.stringify({ message: "primary model failed", model: PRIMARY_MODEL, error: errorSummary(error) }));
   }
@@ -120,5 +120,5 @@ export async function extractTasks(ai: Ai, transcript: string, now: number, tz: 
     temperature: 0,
     max_tokens: 2000,
   });
-  return { tasks: tasksFromModel(modelJson(result)), model: FALLBACK_MODEL };
+  return { tasks: tasksFromModel(modelJson(result), { now, tz }), model: FALLBACK_MODEL };
 }

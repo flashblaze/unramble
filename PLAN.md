@@ -350,7 +350,8 @@ Verified on the deployed Worker:
 - Random bytes as audio → `500 internal`, and history shows `FAILED (AiError)` with the audio kept.
 - R2 lifecycle rule `expire-audio` (prefix `audio/`, 365 days) is active.
 
-**Finding (the first thing history surfaced):** for the 30 s test clip, "by Thursday evening" came back as **Sat 21 Nov** in 2 of 3 runs (Thursday is 19 Nov), with gpt-oss-120b at `reasoning_effort: low`. Candidate fix: check in code that a quoted weekday name ("Thursday") matches the due date's weekday, and correct it to the calendar's next such day.
+**Finding (the first thing history surfaced):** for the 30 s test clip, "by Thursday evening" came back as **Sat 21 Nov** in 2 of 3 runs (Thursday is 19 Nov), with gpt-oss-120b at `reasoning_effort: low`.
+**Fixed ✅** by `alignWeekday()` in `src/dates.ts`, applied in `tasksFromModel()` to both models' output. When `when_said` names exactly one weekday and `due` falls on another day, the Worker moves the date to the first such weekday after today (in the watch's zone) and keeps the time. It leaves the date alone for arithmetic (`before`/`after`/`week`/`days`/`last`), explicit dates (ordinals, month names), and several weekdays. Covered by 5 tests, including the exact regression. Live: the same clip now gives Thu 19 Nov 18:00 in 3/3 runs (18.8–20.4 s).
 
 ### Phase 3: real watch (in progress, started 2026-11-17)
 Device: Galaxy Watch8 **SM-L330**, Wear OS 6 / Android 16 (API 36, One UI 8 Watch, build `BP2A.250325.020.L330XXS2AZF4`), 480×480 at 340 dpi, `Asia/Kolkata`. Paired over Wireless debugging; the app was installed with `ANDROID_SERIAL=<serial> ./gradlew :app:installDebug` (an old `dev.flashblaze.watchapp` build was uninstalled).

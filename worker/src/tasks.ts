@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { parseLocalDue } from "./dates";
+import { alignWeekday, parseLocalDue } from "./dates";
 
 export const MAX_TASKS = 20;
 const MAX_TITLE = 200;
@@ -41,9 +41,10 @@ const ModelOutput = z.object({ tasks: z.array(z.unknown()) });
  * Tasks from the extraction model, lenient per task. Grounding guard: a due date only survives if the
  * model quoted the speaker's timing words (`when_said`), and a priority only if it quoted importance
  * words (`priority_said`). An unparseable date or unknown priority is dropped, not the task; an
- * over-long title or notes is truncated, not dropped.
+ * over-long title or notes is truncated, not dropped. With `clock`, a due date that contradicts a
+ * weekday the speaker named is corrected (see alignWeekday).
  */
-export function tasksFromModel(output: unknown): Task[] {
+export function tasksFromModel(output: unknown, clock?: { now: number; tz: string }): Task[] {
   const parsed = ModelOutput.safeParse(output);
   if (!parsed.success) return [];
   const tasks: Task[] = [];
@@ -51,10 +52,12 @@ export function tasksFromModel(output: unknown): Task[] {
     const item = ModelTask.safeParse(raw);
     if (!item.success) continue;
     const { title, when_said, due, priority_said, priority, notes } = item.data;
-    const dueValue = due?.trim();
+    const whenSaid = when_said?.trim();
+    let dueValue = whenSaid && due?.trim() && parseLocalDue(due.trim()) ? due.trim() : undefined;
+    if (dueValue && whenSaid && clock) dueValue = alignWeekday(dueValue, whenSaid, clock.now, clock.tz);
     const task = Task.safeParse({
       title: title.trim().slice(0, MAX_TITLE),
-      due: when_said?.trim() && dueValue && parseLocalDue(dueValue) ? dueValue : undefined,
+      due: dueValue,
       priority: priority_said?.trim() && PRIORITIES.some((p) => p === priority) ? priority : 0,
       notes: notes?.trim().slice(0, MAX_NOTES) || undefined,
     });
