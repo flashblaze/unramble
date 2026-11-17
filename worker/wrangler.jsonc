@@ -4,8 +4,11 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-11-16",
   "compatibility_flags": ["nodejs_compat"],
-  "workers_dev": true,
+  // Served only on the custom domain (change or remove `routes` for your own zone; with no routes,
+  // set "workers_dev": true to get https://unramble.<subdomain>.workers.dev instead).
+  "workers_dev": false,
   "preview_urls": false,
+  "routes": [{ "pattern": "unramble.flashblaze.dev", "custom_domain": true }],
   "ai": { "binding": "AI", "remote": true },
   // Strict per-credential quota (src/quota.ts): caps damage if APP_TOKEN leaks (it ships in the APK).
   "durable_objects": { "bindings": [{ "name": "QUOTA", "class_name": "Quota" }] },

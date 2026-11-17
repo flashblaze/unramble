@@ -85,6 +85,11 @@ cp .env.example .env        # then fill in TICKTICK_CLIENT_ID and TICKTICK_CLIEN
 ```
 
 ### 2. Deploy the Worker
+First choose where the Worker lives. `worker/wrangler.jsonc` ships with the author's custom domain, so change it:
+
+- **Your own domain** (any zone in your Cloudflare account): set `"routes": [{ "pattern": "unramble.example.com", "custom_domain": true }]`. Cloudflare creates the DNS record and certificate on deploy.
+- **No domain:** delete `routes` and set `"workers_dev": true`. The URL becomes `https://unramble.<your-subdomain>.workers.dev`.
+
 ```bash
 bun install
 bunx wrangler login                                     # opens the browser
@@ -97,11 +102,11 @@ bun run deploy -- --secrets-file .dev.vars              # first deploy uploads b
 ```
 
 - `bun run auth` opens TickTick's consent page; click **Authorize**. On the very first run it can't upload the token yet, because the Worker doesn't exist; that's expected, and the deploy step uploads it.
-- `bun run deploy` prints your URL, `https://unramble.<your-subdomain>.workers.dev`.
+- `bun run deploy` prints your Worker URL. Below, `<worker-url>` means that URL, e.g. `https://unramble.example.com`.
 
 **Optional smoke test:** this creates a real task in your Inbox.
 ```bash
-curl -X POST "https://unramble.<your-subdomain>.workers.dev/tasks" \
+curl -X POST "<worker-url>/tasks" \
   -H "Authorization: Bearer $(sed -n 's/^APP_TOKEN=//p' .dev.vars)" \
   -H 'Content-Type: application/json' \
   -d '{"tz":"UTC","tasks":[{"title":"Hello from Unramble","priority":0}]}'
@@ -112,7 +117,7 @@ curl -X POST "https://unramble.<your-subdomain>.workers.dev/tasks" \
 Add your Worker URL and the same `APP_TOKEN` to **`local.properties`** at the repo root. The file is gitignored; Android Studio creates it with `sdk.dir`.
 
 ```properties
-unramble.workerUrl=https://unramble.<your-subdomain>.workers.dev
+unramble.workerUrl=<worker-url>
 unramble.appToken=<APP_TOKEN from worker/.dev.vars>
 ```
 

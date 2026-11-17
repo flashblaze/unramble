@@ -112,12 +112,12 @@ Harness and samples: `worker/spike/` (gitignored). Prompt to port: `worker/spike
    | **v4: 21-day calendar + `when_said`/`priority_said` grounding + code guard** | 29/30 | **30/30** | 29/30 |
 
    What fixed it: the model looks weekdays up in a calendar instead of computing them. It must quote your timing and importance words before giving a date or priority, and the Worker drops any date or priority without a quote. gpt-oss-120b: p50 6.6 s, max 23.8 s.
-3. **TickTick ✅** `scripts/auth.ts` (localhost:8765 OAuth) works, and the token lasts **180 days**. `POST /open/v1/task` **without `projectId`** lands in Inbox (`inbox117298866`). `DELETE /open/v1/project/{pid}/task/{id}` works.
+3. **TickTick ✅** `scripts/auth.ts` (localhost:8765 OAuth) works, and the token lasts **180 days**. `POST /open/v1/task` **without `projectId`** lands in Inbox (project ID `inbox<user-id>`). `DELETE /open/v1/project/{pid}/task/{id}` works.
 
 Worst case per request: upload + 26 s Whisper + 24 s LLM ≈ 60 s, so the watch timeout is 120 s.
 
 ### Phase 1: Worker ✅ done 2026-11-16
-Deployed at **`https://unramble.flashblaze.workers.dev`** (originally `voice-tasks`, deleted after the rename). Code in `worker/`. Commands (run in `worker/`):
+Deployed on a custom domain, **`https://unramble.<your-domain>`** (`routes` + `"workers_dev": false` in `wrangler.jsonc`; logs and traces on at 100%). It started on `workers.dev` under the working name `voice-tasks`. Code in `worker/`. Commands (run in `worker/`):
 
 | Command | What |
 |---|---|
