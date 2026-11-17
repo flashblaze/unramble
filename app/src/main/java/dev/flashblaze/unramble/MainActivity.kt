@@ -37,6 +37,9 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.wear.compose.navigation.SwipeDismissableNavHost
+import androidx.wear.compose.navigation.composable
+import androidx.wear.compose.navigation.rememberSwipeDismissableNavController
 import androidx.wear.compose.foundation.lazy.TransformingLazyColumn
 import androidx.wear.compose.foundation.lazy.TransformingLazyColumnScope
 import androidx.wear.compose.foundation.lazy.itemsIndexed
@@ -60,12 +63,25 @@ import java.time.format.DateTimeFormatter
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { MaterialTheme { AppScaffold { UnrambleApp() } } }
+        setContent { MaterialTheme { AppScaffold { UnrambleNavHost() } } }
+    }
+}
+
+/** Record flow plus the on-watch history; swipe right to go back (Wear's swipe-to-dismiss). */
+@Composable
+fun UnrambleNavHost(viewModel: MainViewModel = viewModel()) {
+    val nav = rememberSwipeDismissableNavController()
+    SwipeDismissableNavHost(navController = nav, startDestination = "main") {
+        composable("main") { UnrambleApp(viewModel, onOpenHistory = { nav.navigate("history") }) }
+        composable("history") { HistoryListScreen(viewModel, onOpen = { id -> nav.navigate("history/$id") }) }
+        composable("history/{id}") { entry ->
+            HistoryDetailScreen(viewModel, entry.arguments?.getString("id").orEmpty(), onDeleted = { nav.popBackStack() })
+        }
     }
 }
 
 @Composable
-fun UnrambleApp(viewModel: MainViewModel = viewModel()) {
+fun UnrambleApp(viewModel: MainViewModel, onOpenHistory: () -> Unit) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val permissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
@@ -87,7 +103,7 @@ fun UnrambleApp(viewModel: MainViewModel = viewModel()) {
     }
 
     when (val s = state) {
-        UiState.Idle -> IdleScreen(onRecord = record)
+        UiState.Idle -> IdleScreen(onRecord = record, onHistory = onOpenHistory)
         is UiState.Recording -> RecordingScreen(s.startedAtElapsed, viewModel::stopRecording, viewModel::cancelRecording)
         UiState.Uploading -> ProgressScreen(stringResource(R.string.finding_tasks))
         UiState.Creating -> ProgressScreen(stringResource(R.string.creating_tasks))
@@ -119,7 +135,7 @@ fun UnrambleApp(viewModel: MainViewModel = viewModel()) {
 
 /** Every screen is a list so long text scrolls on the round display and the edge button hugs the bottom. */
 @Composable
-private fun ListScreen(
+internal fun ListScreen(
     edgeButton: (@Composable () -> Unit)?,
     content: TransformingLazyColumnScope.() -> Unit,
 ) {
@@ -136,7 +152,7 @@ private fun ListScreen(
 }
 
 @Composable
-private fun IdleScreen(onRecord: () -> Unit) {
+private fun IdleScreen(onRecord: () -> Unit, onHistory: () -> Unit) {
     ListScreen(edgeButton = null) {
         item {
             Column(Modifier.fillMaxWidth().padding(top = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -153,6 +169,7 @@ private fun IdleScreen(onRecord: () -> Unit) {
                 style = MaterialTheme.typography.bodyMedium,
             )
         }
+        item { SecondaryAction(stringResource(R.string.history), onHistory) }
     }
 }
 
@@ -197,7 +214,7 @@ private fun RecordingScreen(startedAtElapsed: Long, onStop: () -> Unit, onCancel
 
 /** Small tonal pill for the less important action on a screen (Cancel, Discard, Retry). */
 @Composable
-private fun SecondaryAction(label: String, onClick: () -> Unit) {
+internal fun SecondaryAction(label: String, onClick: () -> Unit) {
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
         CompactButton(onClick = onClick, colors = ButtonDefaults.filledTonalButtonColors(), label = { Text(label) })
     }
@@ -299,7 +316,7 @@ private fun MessageScreen(message: String, action: String, onAction: () -> Unit,
 }
 
 /** "Today 10:00", "Tomorrow", "Thu 19 Nov 18:00" for the Worker's local `due` values. */
-private fun dueLabel(due: String, today: LocalDate): String {
+internal fun dueLabel(due: String, today: LocalDate): String {
     val date = LocalDate.parse(due.take(10))
     val day = when (date) {
         today -> "Today"

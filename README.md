@@ -168,6 +168,7 @@ adb connect <ip>:<port>                 # the port shown on the main Wireless de
 2. Talk. Recording continues with the screen off, and it stops automatically at **5:00**.
 3. Tap **Stop**. After a few seconds you see the tasks it found.
 4. Untick anything wrong, scroll to the end (crown or bezel), and tap **Add N**.
+5. **History** (on the record screen) lists your last 20 recordings, kept on the watch. Tap one to play it on the watch speaker (or Bluetooth headphones) and see its transcript and tasks: ✓ added, · dropped. Swipe right to go back. *Delete from watch* removes a recording from the watch only; the copy in your Cloudflare account stays.
 
 **Phrases it understands:**
 
@@ -196,6 +197,8 @@ No date words means no date, and no priority words means no priority.
 | Request quota | `worker/src/quota.ts`, `PER_MINUTE`, `EXTRACTS_PER_DAY` | 10/min, 30 dictations per 24 h |
 | Models | `worker/src/extract.ts` | Whisper large-v3-turbo; gpt-oss-120b → llama-3.3-70b |
 | Language | `worker/src/extract.ts`, Whisper `language` | `en` |
+| Words to spell right | `bun run vocab add …` (D1 table `vocabulary`) | `Unramble`, `TickTick` |
+| Recordings kept on the watch | `MainViewModel.kt`, `HistoryStore(…, limit = 20)` | 20 |
 | Which TickTick list | `worker/src/ticktick.ts` (no `projectId` = Inbox) | Inbox |
 | Save history | `worker/wrangler.jsonc`, `vars.SAVE_HISTORY` | `"true"` |
 | Delete records after | `vars.HISTORY_RETENTION_DAYS` (daily cron) | `"0"` = keep forever |
@@ -230,6 +233,15 @@ bun run history --id <id>                # one dictation as JSON
 bun run history --play <id>              # download the audio and play it (mpv / ffplay)
 bun run history --save <id> clip.ogg     # just download it
 bun run history --purge-older-than 90d   # shows what it would delete; add --yes to do it
+```
+
+**Teach it your words.** Names and unusual words get misheard ("Unramble" came out as "on Ramble" until it was in the list). The vocabulary is sent to Whisper as a spelling hint and to the task extractor as "correct spellings". The Worker picks up changes within 5 minutes.
+
+```bash
+bun run vocab                            # list
+bun run vocab add "Priya Sharma" Rahul   # add (newest are hinted first; ~150 words max)
+bun run vocab remove Rahul
+bun run vocab suggest                    # capitalised words from your transcripts that aren't listed yet
 ```
 
 For raw SQL, use the Cloudflare dashboard → D1 → `unramble` → Console. Messages that failed to save 10 times end up in the `unramble-history-dlq` queue, and its backlog shows in the dashboard. The Worker also logs `history write failed`.
@@ -279,6 +291,8 @@ worker/                    Cloudflare Worker: TypeScript
   migrations/              D1 schema (dictations, submissions, FTS5 search)
   scripts/auth.ts          TickTick OAuth helper (localhost:8765)
   scripts/history.ts       the `bun run history` CLI
+  scripts/vocab.ts         the `bun run vocab` CLI
+  src/vocabulary.ts        vocabulary hints (Whisper initial_prompt + extraction prompt)
 docs/logo/                 logo source (SVG), renders, concepts
 tools/emulator/            emulator mic injection and UI tap helpers
 PLAN.md                    design log: decisions, measurements, review findings

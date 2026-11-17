@@ -1,15 +1,19 @@
 package dev.flashblaze.unramble
 
 import android.app.Application
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
 import java.time.ZoneId
+import java.util.UUID
 
 sealed interface UiState {
     data object Idle : UiState
@@ -41,7 +45,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** Links /tasks (and its retries) to the saved recording in the Worker's history. */
     private var dictationId: String? = null
 
+    /** Recent recordings kept on the watch for playback (local; the Worker's R2/D1 copy is the archive). */
+    private val historyStore = HistoryStore(File(application.filesDir, "history"))
+    private val _history = MutableStateFlow<List<HistoryEntry>>(emptyList())
+    val history: StateFlow<List<HistoryEntry>> = _history.asStateFlow()
+
+    /** The on-watch history entry for the current dictation, updated after each /tasks call. */
+    private var historyId: String? = null
+
     init {
+        refreshHistory()
         // The recorder outlives this screen (screen off, activity recreated); resume from its state.
         viewModelScope.launch {
             Recorder.state.collect { recorder ->
@@ -92,13 +105,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _state.value = try {
                 val extraction = api.extract(file, ZoneId.systemDefault().id)
                 dictationId = extraction.dictationId
+                keepRecording(file, extraction.dictationId, "extracted", extraction.transcript, extraction.tasks)
                 if (extraction.tasks.isEmpty()) {
                     UiState.NothingHeard("No tasks heard")
                 } else {
                     UiState.Review(extraction.transcript, extraction.tasks, extraction.tasks.indices.toSet())
                 }
             } catch (e: ApiException) {
-                if (e.code == "no_speech") UiState.NothingHeard("No speech heard") else UiState.Error(errorMessage(e), Retry.Upload)
+                if (e.code == "no_speech") {
+                    keepRecording(file, null, "no_speech", null, emptyList())
+                    UiState.NothingHeard("No speech heard")
+                } else {
+                    UiState.Error(errorMessage(e), Retry.Upload)
+                }
             } catch (e: IOException) {
                 UiState.Error(errorMessage(e), Retry.Upload)
             }
@@ -116,8 +135,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.value = UiState.Creating
         viewModelScope.launch {
             _state.value = try {
-                val result = api.createTasks(ZoneId.systemDefault().id, pending, dictationId)
-                pending = result.failedOf(pending)
+                val sent = pending
+                val result = api.createTasks(ZoneId.systemDefault().id, sent, dictationId)
+                pending = result.failedOf(sent)
+                historyId?.let { id ->
+                    val failed = result.failed.map { it.index }.toSet()
+                    val kept = sent.filterIndexed { i, _ -> i !in failed }
+                    withContext(Dispatchers.IO) { historyStore.recordSubmission(id, kept, result.created.size) }
+                    refreshHistory()
+                }
                 if (pending.isEmpty()) discardAudio()
                 UiState.Done(result.created.size, pending)
             } catch (e: ApiException) {
@@ -132,12 +158,47 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         discardAudio()
         pending = emptyList()
         dictationId = null
+        historyId = null
         _state.value = UiState.Idle
     }
 
     private fun discardAudio() {
         audio?.delete()
         audio = null
+    }
+
+    fun deleteFromHistory(id: String) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { historyStore.delete(id) }
+            refreshHistory()
+        }
+    }
+
+    fun clearHistory() {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { historyStore.clear() }
+            refreshHistory()
+        }
+    }
+
+    fun historyAudio(id: String): File = historyStore.audioFile(id)
+
+    /** Moves the uploaded recording into the on-watch history; it no longer needs re-uploading. */
+    private suspend fun keepRecording(file: File, serverId: String?, outcome: String, transcript: String?, proposed: List<Task>) {
+        val id = serverId ?: UUID.randomUUID().toString()
+        val entry = HistoryEntry(id, System.currentTimeMillis(), outcome, transcript, proposed)
+        val saved = runCatching { withContext(Dispatchers.IO) { historyStore.add(entry, file) } }
+            .onFailure { Log.w("MainViewModel", "Couldn't keep recording", it) }
+            .isSuccess
+        if (saved) {
+            historyId = id
+            audio = null
+        }
+        refreshHistory()
+    }
+
+    private fun refreshHistory() {
+        viewModelScope.launch { _history.value = withContext(Dispatchers.IO) { historyStore.list() } }
     }
 
     private fun errorMessage(e: Exception): String = when {

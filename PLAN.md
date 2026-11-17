@@ -353,7 +353,7 @@ Verified on the deployed Worker:
 **Finding (the first thing history surfaced):** for the 30 s test clip, "by Thursday evening" came back as **Sat 21 Nov** in 2 of 3 runs (Thursday is 19 Nov), with gpt-oss-120b at `reasoning_effort: low`.
 **Fixed ✅** by `alignWeekday()` in `src/dates.ts`, applied in `tasksFromModel()` to both models' output. When `when_said` names exactly one weekday and `due` falls on another day, the Worker moves the date to the first such weekday after today (in the watch's zone) and keeps the time. It leaves the date alone for arithmetic (`before`/`after`/`week`/`days`/`last`), explicit dates (ordinals, month names), and several weekdays. Covered by 5 tests, including the exact regression. Live: the same clip now gives Thu 19 Nov 18:00 in 3/3 runs (18.8–20.4 s).
 
-### Phase 2c: vocabulary hints + playing recordings on the watch (planned)
+### Phase 2c: vocabulary hints + playing recordings on the watch ✅ built 2026-11-17 (option B chosen)
 
 #### Part 1: vocabulary hints
 Problem: Whisper doesn't know words it rarely hears. "Unramble" came out as "and ramble"; names and jargon (people, products, places) get respelled.
@@ -427,6 +427,24 @@ Goal: an **History** button on the record screen opens a list of recent dictatio
 **Done when:**
 - **Vocabulary:** "Unramble" is spelled right in ≥ 3/3 live runs with the hint (it was wrong without it), and `bun run vocab` works.
 - **Playback:** on the Galaxy Watch8 you open History, see your last dictations, and hear one through the speaker. Tests pass; README and PLAN are updated.
+
+**Built.**
+
+*Vocabulary:*
+- `migrations/0002_vocabulary.sql`, `src/vocabulary.ts`, `scripts/vocab.ts`, and `scripts/remote.ts`, which now holds the wrangler/D1 helpers shared with the history CLI.
+- If Whisper echoes the hint on silence ("Vocabulary: Unramble, TickTick."), that also counts as no speech.
+- `vocab suggest` skips weekdays and months.
+- A/B on the same TTS clip: without the hint "test **on Ramble**" in 3/3 runs, with it "test **Unramble**" in 3/3. The live `/extract` returned the task "test Unramble".
+- 59 Worker tests pass.
+
+*On-watch history:*
+- `HistoryStore.kt` (+4 unit tests), `HistoryScreens.kt`, `MainViewModel` integration, and Wear `SwipeDismissableNavHost`.
+- Differences from the plan:
+  - Plays with the framework `MediaPlayer` instead of Media3 ExoPlayer: no new dependency, and Android's `c2.android.opus.decoder` plays the Ogg/Opus files directly.
+  - Deleting is a *Delete from watch* button on the detail screen rather than a long-press, since long-press is hard to discover on a watch.
+  - Recordings with no speech are kept as well.
+- Emulator end to end: dictate → Add 2 → History lists "Today 19:12 · ✓2 · Buy milk, Call mom" plus the 2 silent attempts. On the detail screen, Play shows the position advancing (0:02 → 0:06 of 0:11) and returns to Play at the end. Swiping right goes back to the list, delete removes an entry, and history survives a reinstall.
+- Still to do: hear it through the Galaxy Watch8 speaker.
 
 ### Phase 3: real watch (in progress, started 2026-11-17)
 Device: Galaxy Watch8 **SM-L330**, Wear OS 6 / Android 16 (API 36, One UI 8 Watch, build `BP2A.250325.020.L330XXS2AZF4`), 480×480 at 340 dpi, `Asia/Kolkata`. Paired over Wireless debugging; the app was installed with `ANDROID_SERIAL=<serial> ./gradlew :app:installDebug` (an old `dev.flashblaze.watchapp` build was uninstalled).
