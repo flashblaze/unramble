@@ -19,10 +19,11 @@ export const Task = z.object({
 });
 export type Task = z.infer<typeof Task>;
 
-/** `POST /tasks` body. Strict: one bad task rejects the request. */
+/** `POST /tasks` body. Strict: one bad task rejects the request. `dictationId` links it to history. */
 export const CreateTasksBody = z.object({
   tz: z.string(),
   tasks: z.array(Task).min(1).max(MAX_TASKS),
+  dictationId: z.uuid().optional(),
 });
 
 /** What the extraction model returns per task; see the prompt in extract.ts. */

@@ -38,6 +38,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** Tasks the user confirmed; on partial failure, only the failed ones. */
     private var pending: List<Task> = emptyList()
 
+    /** Links /tasks (and its retries) to the saved recording in the Worker's history. */
+    private var dictationId: String? = null
+
     init {
         // The recorder outlives this screen (screen off, activity recreated); resume from its state.
         viewModelScope.launch {
@@ -88,6 +91,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _state.value = try {
                 val extraction = api.extract(file, ZoneId.systemDefault().id)
+                dictationId = extraction.dictationId
                 if (extraction.tasks.isEmpty()) {
                     UiState.NothingHeard("No tasks heard")
                 } else {
@@ -112,7 +116,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.value = UiState.Creating
         viewModelScope.launch {
             _state.value = try {
-                val result = api.createTasks(ZoneId.systemDefault().id, pending)
+                val result = api.createTasks(ZoneId.systemDefault().id, pending, dictationId)
                 pending = result.failedOf(pending)
                 if (pending.isEmpty()) discardAudio()
                 UiState.Done(result.created.size, pending)
@@ -127,6 +131,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun reset() {
         discardAudio()
         pending = emptyList()
+        dictationId = null
         _state.value = UiState.Idle
     }
 

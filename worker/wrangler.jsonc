@@ -13,6 +13,36 @@
   // Strict per-credential quota (src/quota.ts): caps damage if APP_TOKEN leaks (it ships in the APK).
   "durable_objects": { "bindings": [{ "name": "QUOTA", "class_name": "Quota" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Quota"] }],
+  // Dictation history (PLAN.md, Phase 2b). Forks: create your own with
+  //   wrangler d1 create unramble && wrangler r2 bucket create unramble-audio
+  //   wrangler queues create unramble-history && wrangler queues create unramble-history-dlq
+  // then replace database_id, or set SAVE_HISTORY to "false".
+  "r2_buckets": [{ "binding": "AUDIO", "bucket_name": "unramble-audio" }],
+  "d1_databases": [
+    { "binding": "DB", "database_name": "unramble", "database_id": "694d3851-3e2d-4ea7-98c8-d7ca81c72bfc", "migrations_dir": "migrations" }
+  ],
+  "queues": {
+    "producers": [{ "binding": "HISTORY", "queue": "unramble-history" }],
+    "consumers": [
+      {
+        "queue": "unramble-history",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 10,
+        "retry_delay": 30,
+        "dead_letter_queue": "unramble-history-dlq"
+      }
+    ]
+  },
+  "vars": {
+    // "false" turns off saving audio and records entirely.
+    "SAVE_HISTORY": "true",
+    // Delete D1 rows (and their audio) older than this many days; "0" keeps them forever.
+    // Audio also expires on its own via the R2 lifecycle rule (365 days, see README).
+    "HISTORY_RETENTION_DAYS": "0"
+  },
+  // Daily retention purge (no-op while HISTORY_RETENTION_DAYS is "0").
+  "triggers": { "crons": ["17 3 * * *"] },
   "secrets": {
     // APP_TOKEN: bearer token the watch sends. TICKTICK_TOKEN: from `bun run auth`.
     "required": ["APP_TOKEN", "TICKTICK_TOKEN"]

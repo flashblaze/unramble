@@ -203,7 +203,7 @@ A read-only security audit and a code review found no critical or high issues. F
 
 Git history scanned: no secret values are present in any commit.
 
-### Phase 2b: dictation history: transcripts + audio (planned)
+### Phase 2b: dictation history: transcripts + audio ✅ built 2026-11-17
 Goal: keep every dictation (the **audio**, the **transcript**, what the model **proposed**, what you **kept**, and what TickTick **created**) so you can look back later, without ever slowing down or breaking the main flow. Workers Paid plan.
 
 **Decision: audio → R2 (written directly in the background), records → Queue → D1.**
@@ -332,6 +332,25 @@ CREATE VIRTUAL TABLE dictations_fts USING fts5 (transcript, content = 'dictation
 - Latency check on the deployed Worker: `/extract` p50 before vs after stays within noise.
 
 **Done when** a dictation on the emulator shows up in `bun run history` with transcript, proposed and kept tasks and created count; `--play` plays its audio; `--search` finds it; a forced failure (e.g. LLM error) still appears with audio; the DLQ is empty; tests pass; and the README reflects the new privacy model.
+
+**Built** as planned:
+- `worker/src/history.ts`, `migrations/0001_history.sql`, `scripts/history.ts`, `test/history.test.ts`.
+- 48 Worker tests and 3 app tests pass.
+
+Differences from the plan:
+- **Resources:** created explicitly and named in `wrangler.jsonc` (`wrangler d1 create`, `r2 bucket create`, `queues create` ×2) instead of auto-provisioned, so the CLI and dashboard names are fixed. Forks run the same commands (README).
+- **No `--dlq` command:** `wrangler queues info` shows no backlog count, so the DLQ backlog is read in the dashboard instead. Failed writes are also logged as `history write failed`.
+- **Vars typing:** `wrangler types --strict-vars=false`, so vars are `string` rather than literal types.
+- **Purge count:** the purge counts deleted dictations with `RETURNING id`, because D1's `meta.changes` includes the FTS trigger writes.
+
+Verified on the deployed Worker:
+- Three live `/extract` calls took 21.0 / 18.9 / 24.7 s, the same as before history, and returned `dictationId`. Their rows reached D1 through the queue within seconds.
+- The audio saved via `bun run history --save` is byte-identical to the upload.
+- `--search` highlights matches and handles a quote in the term.
+- Random bytes as audio → `500 internal`, and history shows `FAILED (AiError)` with the audio kept.
+- R2 lifecycle rule `expire-audio` (prefix `audio/`, 365 days) is active.
+
+**Finding (the first thing history surfaced):** for the 30 s test clip, "by Thursday evening" came back as **Sat 21 Nov** in 2 of 3 runs (Thursday is 19 Nov), with gpt-oss-120b at `reasoning_effort: low`. Candidate fix: check in code that a quoted weekday name ("Thursday") matches the due date's weekday, and correct it to the calendar's next such day.
 
 ### Phase 3: real watch (in progress, started 2026-11-17)
 Device: Galaxy Watch8 **SM-L330**, Wear OS 6 / Android 16 (API 36, One UI 8 Watch, build `BP2A.250325.020.L330XXS2AZF4`), 480×480 at 340 dpi, `Asia/Kolkata`. Paired over Wireless debugging; the app was installed with `ANDROID_SERIAL=<serial> ./gradlew :app:installDebug` (an old `dev.flashblaze.watchapp` build was uninstalled).

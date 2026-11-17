@@ -1,3 +1,5 @@
+<img src="docs/logo/unramble.svg" width="96" alt="Unramble logo: a loose loop straightening into a checkmark">
+
 # Unramble
 
 **Ramble at your Wear OS watch and get clean TickTick tasks.** Dictate however it comes out, check what it heard, and the tasks land in your **TickTick** Inbox.
@@ -12,9 +14,9 @@ You tap the mic on your wrist and talk normally. For example: *"Okay, call the b
 - **Dates and priorities only when you say them.** The model must quote your words ("tomorrow around ten", "high priority") before it can set a due date or priority; anything it can't back with a quote is dropped.
 - **Nothing reaches TickTick until you confirm** on the watch.
 - **Runs on Cloudflare's free tier** at personal volume: about 100 neurons per minute of dictation, against 10,000 free per day.
-- **Private by design:** audio and transcripts are never stored, and logs never contain what you said.
+- **Your history, in your account:** each dictation's audio, transcript, proposed and kept tasks are saved in *your* Cloudflare account (R2 + D1), in the background, so you can look back with `bun run history`. Logs never contain what you said. One setting turns it off.
 
-> Built for a Galaxy Watch 8 (Wear OS 6), and works on any Wear OS 3+ watch. So far it has been tested end to end on the Wear OS 6 emulator.
+> Built for a Galaxy Watch 8 (Wear OS 6), and works on any Wear OS 3+ watch. Tested on a Galaxy Watch8 (SM-L330) and on the Wear OS 6 emulator.
 
 ---
 
@@ -45,6 +47,7 @@ sequenceDiagram
    Measured on 10 tricky dictations × 3 runs: this setup scored **30/30**, against about 50% for a plain prompt. If gpt-oss errors or stalls for more than 25 s, the Worker retries once with `@cf/meta/llama-3.3-70b-instruct-fp8-fast`.
 4. **Review.** The watch lists every task with its date, priority, and notes, everything that will be sent, each with a checkbox.
 5. **Create.** The Worker creates the tasks one by one through the [TickTick Open API](https://developer.ticktick.com/), converting dates to your time zone. If some fail, the watch retries only those.
+6. **History, in the background.** The audio upload to R2 starts as soon as it arrives (alongside Whisper, so even failed dictations keep their audio). After the watch has its answer, a queue message carries the transcript, proposed tasks, outcome and timings, and a queue consumer writes them to D1. `/tasks` does the same for what you kept. Nothing on the watch's path waits for any of this, and a storage failure never affects a dictation.
 
 End to end, a short dictation takes about 5–25 s, depending on Workers AI load; a 5-minute one about 60 s.
 
@@ -89,6 +92,17 @@ First choose where the Worker lives. `worker/wrangler.jsonc` ships with the auth
 
 - **Your own domain** (any zone in your Cloudflare account): set `"routes": [{ "pattern": "unramble.example.com", "custom_domain": true }]`. Cloudflare creates the DNS record and certificate on deploy.
 - **No domain:** delete `routes` and set `"workers_dev": true`. The URL becomes `https://unramble.<your-subdomain>.workers.dev`.
+
+Then create the history storage (skip this and set `"SAVE_HISTORY": "false"` in `wrangler.jsonc` if you don't want it):
+
+```bash
+bunx wrangler d1 create unramble                  # put the printed database_id into wrangler.jsonc
+bunx wrangler r2 bucket create unramble-audio
+bunx wrangler queues create unramble-history
+bunx wrangler queues create unramble-history-dlq
+bunx wrangler d1 migrations apply unramble --remote
+bunx wrangler r2 bucket lifecycle add unramble-audio expire-audio audio/ --expire-days 365   # audio auto-deletes after a year
+```
 
 ```bash
 bun install
@@ -182,6 +196,9 @@ No date words means no date, and no priority words means no priority.
 | Models | `worker/src/extract.ts` | Whisper large-v3-turbo; gpt-oss-120b → llama-3.3-70b |
 | Language | `worker/src/extract.ts`, Whisper `language` | `en` |
 | Which TickTick list | `worker/src/ticktick.ts` (no `projectId` = Inbox) | Inbox |
+| Save history | `worker/wrangler.jsonc`, `vars.SAVE_HISTORY` | `"true"` |
+| Delete records after | `vars.HISTORY_RETENTION_DAYS` (daily cron) | `"0"` = keep forever |
+| Delete audio after | R2 lifecycle rule `expire-audio` | 365 days |
 
 ---
 
@@ -191,8 +208,30 @@ No date words means no date, and no priority words means no priority.
 - **The token is in the APK.** It's compiled in through `BuildConfig`, so anyone holding your APK can extract it. That's fine for a personal, sideloaded app; don't publish your APK. To rotate the token: `bun run wrangler secret put APP_TOKEN`, update `local.properties`, reinstall.
 - **Quota.** A Durable Object (`worker/src/quota.ts`) strictly limits each credential to **10 requests per minute** and **30 dictations per rolling 24 h**, returning `429` with `Retry-After`. Even a leaked token can't run up AI costs or flood your Inbox.
 - **TickTick token** (180 days, no refresh): it's stored only as a Worker secret and in your local `.dev.vars`. When the watch shows *"TickTick login expired"*, run `bun run auth` again.
-- **What's stored:** nothing. Audio and transcripts exist only for the duration of a request. On the watch, the recording sits in the app's private cache until the tasks are created. Whisper on Workers AI is zero-data-retention. Logs contain request IDs, sizes, timings, task counts and error *types*, never transcript text.
+- **What's stored, and where:** your account only.
+  - **Audio** goes to the R2 bucket `unramble-audio`. It's private (no public URL) and auto-deletes after 365 days.
+  - **Records** go to the D1 database `unramble`: transcript, proposed tasks, kept tasks, outcome, model and timings.
+  - **No way to read it over HTTP:** reading history needs your Cloudflare login (`bun run history`, the dashboard), so a leaked app token can only *add* dictations, within the quota.
+  - **Deleting:** deleted D1 rows stay recoverable for 30 days through D1 Time Travel.
+  - **Turning it off:** `SAVE_HISTORY` = `"false"`.
+  - **Elsewhere:** on the watch, the recording sits in the app's private cache until the tasks are created. Whisper on Workers AI is zero-data-retention. Logs contain request IDs, sizes, timings, task counts and error *types*, never transcript text.
 - **What the model can do:** only return JSON. The Worker validates every field (zod) and has no tools. Whatever you say can only ever turn into suggested tasks, which you approve.
+
+---
+
+## Looking back at dictations
+
+```bash
+cd worker
+bun run history                          # last 20: time, outcome, 🎧 if audio, transcript, ✓ kept / · dropped tasks
+bun run history --search "plumber"       # full-text search over transcripts, matches in [brackets]
+bun run history --id <id>                # one dictation as JSON
+bun run history --play <id>              # download the audio and play it (mpv / ffplay)
+bun run history --save <id> clip.ogg     # just download it
+bun run history --purge-older-than 90d   # shows what it would delete; add --yes to do it
+```
+
+For raw SQL, use the Cloudflare dashboard → D1 → `unramble` → Console. Messages that failed to save 10 times end up in the `unramble-history-dlq` queue, and its backlog shows in the dashboard. The Worker also logs `history write failed`.
 
 ---
 
@@ -229,13 +268,17 @@ app/                       Wear OS app: Kotlin, Compose for Wear OS Material3
   MainViewModel.kt         record → upload → review → create state machine
   MainActivity.kt          screens
 worker/                    Cloudflare Worker: TypeScript
-  src/index.ts             routing, auth, quota, body limits, logs
+  src/index.ts             routing, auth, quota, body limits, logs, queue + cron handlers
   src/extract.ts           Whisper, prompt, model fallback
   src/tasks.ts             zod schemas and the quote-before-date guard
   src/dates.ts             time-zone math: prompt calendar, TickTick dates
   src/ticktick.ts          TickTick client
   src/quota.ts             Durable Object quota
+  src/history.ts           audio → R2, history messages, queue consumer, retention purge
+  migrations/              D1 schema (dictations, submissions, FTS5 search)
   scripts/auth.ts          TickTick OAuth helper (localhost:8765)
+  scripts/history.ts       the `bun run history` CLI
+docs/logo/                 logo source (SVG), renders, concepts
 tools/emulator/            emulator mic injection and UI tap helpers
 PLAN.md                    design log: decisions, measurements, review findings
 ```
@@ -244,8 +287,8 @@ PLAN.md                    design log: decisions, measurements, review findings
 
 | Route | Body | Response |
 |---|---|---|
-| `POST /extract?tz=<IANA zone>` | raw Ogg/Opus audio, ≤ 1.5 MB | `{transcript, tasks: [{title, due?, priority, notes?}]}` |
-| `POST /tasks` | `{tz, tasks: [...]}`, 1–20 tasks | `{created: [{title, id}], failed: [{index, title, error}]}` |
+| `POST /extract?tz=<IANA zone>` | raw Ogg/Opus audio, ≤ 1.5 MB | `{dictationId, transcript, tasks: [{title, due?, priority, notes?}]}` |
+| `POST /tasks` | `{tz, tasks: [...], dictationId?}`, 1–20 tasks | `{created: [{title, id}], failed: [{index, title, error}]}` |
 
 - `due` is local time: `YYYY-MM-DD` (all day) or `YYYY-MM-DDTHH:MM`.
 - `priority`: 0 none, 1 low, 3 medium, 5 high.

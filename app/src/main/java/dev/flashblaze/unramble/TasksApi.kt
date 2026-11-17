@@ -17,8 +17,9 @@ import java.util.concurrent.TimeUnit
 @Serializable
 data class Task(val title: String, val due: String? = null, val priority: Int = 0, val notes: String? = null)
 
+/** [dictationId] identifies the saved recording (Worker history); send it back with [TasksApi.createTasks]. */
 @Serializable
-data class Extraction(val transcript: String, val tasks: List<Task>)
+data class Extraction(val transcript: String, val tasks: List<Task>, val dictationId: String? = null)
 
 @Serializable
 data class CreatedTask(val title: String, val id: String)
@@ -37,7 +38,7 @@ data class CreateResult(val created: List<CreatedTask>, val failed: List<FailedT
 }
 
 @Serializable
-private data class CreateRequest(val tz: String, val tasks: List<Task>)
+private data class CreateRequest(val tz: String, val tasks: List<Task>, val dictationId: String? = null)
 
 @Serializable
 private data class ErrorBody(val error: String)
@@ -62,8 +63,8 @@ class TasksApi(baseUrl: String, private val token: String) {
         return call(Request.Builder().url(url).post(audio.asRequestBody("audio/ogg".toMediaType())))
     }
 
-    suspend fun createTasks(tz: String, tasks: List<Task>): CreateResult {
-        val body = json.encodeToString(CreateRequest(tz, tasks)).toRequestBody("application/json".toMediaType())
+    suspend fun createTasks(tz: String, tasks: List<Task>, dictationId: String? = null): CreateResult {
+        val body = json.encodeToString(CreateRequest(tz, tasks, dictationId)).toRequestBody("application/json".toMediaType())
         return call(Request.Builder().url(base.newBuilder().addPathSegment("tasks").build()).post(body))
     }
 

@@ -4,10 +4,11 @@
   "type": "module",
   "scripts": {
     "auth": "bun scripts/auth.ts",
+    "history": "bun scripts/history.ts",
     "dev": "./scripts/wrangler.sh dev",
     "deploy": "./scripts/wrangler.sh deploy",
     "wrangler": "./scripts/wrangler.sh",
-    "types": "wrangler types",
+    "types": "wrangler types --strict-vars=false",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

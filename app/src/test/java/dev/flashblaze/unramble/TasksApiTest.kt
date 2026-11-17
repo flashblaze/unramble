@@ -46,7 +46,10 @@ class TasksApiTest {
         val request = server.takeRequest()
         assertEquals("/tasks", request.url.encodedPath)
         assertEquals("Bearer token", request.headers["Authorization"])
-        val tasks = Json.parseToJsonElement(request.body!!.utf8()).jsonObject["tasks"]!!.jsonArray.map { it as JsonObject }
+        val body = Json.parseToJsonElement(request.body!!.utf8()).jsonObject
+        // The Worker accepts an absent dictationId but rejects null (bad_request), like priority before.
+        assertFalse("null dictationId must be omitted", "dictationId" in body)
+        val tasks = body["tasks"]!!.jsonArray.map { it as JsonObject }
         assertEquals("0", tasks[0]["priority"].toString())
         assertFalse("null due must be omitted, not sent as null", "due" in tasks[0])
         assertFalse("null notes must be omitted, not sent as null", "notes" in tasks[0])

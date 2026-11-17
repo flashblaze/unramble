@@ -1,6 +1,7 @@
 import { errorSummary } from "./errors";
 import { extractTasks, isSilence, transcribe } from "./extract";
 import { isValidTimeZone } from "./dates";
+import { consumeHistory, purgeHistory, saveAudio, sendHistory, type DictationMessage } from "./history";
 import { CreateTasksBody } from "./tasks";
 import { createTask, TickTickAuthError } from "./ticktick";
 
@@ -56,41 +57,64 @@ async function readBody(request: Request, limit: number): Promise<Uint8Array | n
   return body;
 }
 
-/** POST /extract?tz=<IANA zone>, body = Ogg/Opus audio. → {transcript, tasks} */
-async function handleExtract(request: Request, env: Env, url: URL, requestId: string): Promise<Response> {
+/** POST /extract?tz=<IANA zone>, body = Ogg/Opus audio. → {dictationId, transcript, tasks} */
+async function handleExtract(request: Request, env: Env, ctx: ExecutionContext, url: URL, requestId: string): Promise<Response> {
   const tz = url.searchParams.get("tz") ?? "";
   if (!isValidTimeZone(tz)) return errorResponse(400, "bad_timezone");
   const audio = await readBody(request, MAX_AUDIO_BYTES);
   if (!audio) return errorResponse(413, "too_large");
   if (audio.byteLength === 0) return errorResponse(400, "empty_audio");
 
-  const whisperStart = Date.now();
-  const transcript = await transcribe(env.AI, audio);
-  const whisperMs = Date.now() - whisperStart;
-  if (isSilence(transcript)) {
-    console.log(JSON.stringify({ message: "extract", requestId, audioBytes: audio.byteLength, whisperMs, outcome: "no_speech" }));
-    return errorResponse(422, "no_speech");
-  }
+  const dictationId = crypto.randomUUID();
+  const startedAt = Date.now();
+  // History runs beside the main flow and is never awaited here. The audio upload starts before
+  // Whisper so recordings that fail to process are kept too.
+  const audioSaved = env.SAVE_HISTORY !== "false" ? saveAudio(env.AUDIO, dictationId, startedAt, tz, audio) : null;
+  const entry: DictationMessage = {
+    type: "dictation",
+    id: dictationId,
+    createdAt: startedAt,
+    tz,
+    outcome: "failed",
+    audioBytes: audio.byteLength,
+  };
+  try {
+    const whisperStart = Date.now();
+    const transcript = await transcribe(env.AI, audio);
+    entry.transcript = transcript;
+    entry.whisperMs = Date.now() - whisperStart;
+    if (isSilence(transcript)) {
+      entry.outcome = "no_speech";
+      console.log(JSON.stringify({ message: "extract", requestId, audioBytes: audio.byteLength, whisperMs: entry.whisperMs, outcome: "no_speech" }));
+      return errorResponse(422, "no_speech");
+    }
 
-  const llmStart = Date.now();
-  const { tasks, model } = await extractTasks(env.AI, transcript, Date.now(), tz);
-  console.log(
-    JSON.stringify({
-      message: "extract",
-      requestId,
-      audioBytes: audio.byteLength,
-      words: transcript.split(/\s+/).length,
-      tasks: tasks.length,
-      model,
-      whisperMs,
-      llmMs: Date.now() - llmStart,
-    }),
-  );
-  return Response.json({ transcript, tasks });
+    const llmStart = Date.now();
+    const { tasks, model } = await extractTasks(env.AI, transcript, Date.now(), tz);
+    Object.assign(entry, { outcome: "extracted", tasks, model, llmMs: Date.now() - llmStart });
+    console.log(
+      JSON.stringify({
+        message: "extract",
+        requestId,
+        audioBytes: audio.byteLength,
+        words: transcript.split(/\s+/).length,
+        tasks: tasks.length,
+        model,
+        whisperMs: entry.whisperMs,
+        llmMs: entry.llmMs,
+      }),
+    );
+    return Response.json({ dictationId, transcript, tasks });
+  } catch (error) {
+    entry.error = error instanceof Error ? error.name : "unknown";
+    throw error;
+  } finally {
+    if (audioSaved) ctx.waitUntil(sendHistory(env.HISTORY, audioSaved.then((saved) => ({ ...entry, ...saved }))));
+  }
 }
 
 /** POST /tasks, body = {tz, tasks}. Creates each task in the TickTick Inbox. → {created, failed} */
-async function handleTasks(request: Request, env: Env, requestId: string): Promise<Response> {
+async function handleTasks(request: Request, env: Env, ctx: ExecutionContext, requestId: string): Promise<Response> {
   const raw = await readBody(request, MAX_JSON_BYTES);
   if (!raw) return errorResponse(413, "too_large");
   let json: unknown;
@@ -101,8 +125,23 @@ async function handleTasks(request: Request, env: Env, requestId: string): Promi
   }
   const body = CreateTasksBody.safeParse(json);
   if (!body.success) return errorResponse(400, "bad_request");
-  const { tz, tasks } = body.data;
+  const { tz, tasks, dictationId } = body.data;
   if (!isValidTimeZone(tz)) return errorResponse(400, "bad_timezone");
+
+  const recordSubmission = (createdCount: number, failedCount: number) => {
+    if (!dictationId || env.SAVE_HISTORY === "false") return;
+    ctx.waitUntil(
+      sendHistory(env.HISTORY, {
+        type: "submission",
+        id: crypto.randomUUID(),
+        dictationId,
+        createdAt: Date.now(),
+        submitted: tasks,
+        createdCount,
+        failedCount,
+      }),
+    );
+  };
 
   const created: { title: string; id: string }[] = [];
   // `index` is the task's position in the request, so the watch retries exactly the failed ones.
@@ -114,6 +153,7 @@ async function handleTasks(request: Request, env: Env, requestId: string): Promi
     } catch (error) {
       if (error instanceof TickTickAuthError) {
         console.error(JSON.stringify({ message: "tasks", requestId, outcome: "ticktick_auth_expired", created: created.length }));
+        recordSubmission(created.length, tasks.length - created.length);
         return Response.json({ error: "ticktick_auth_expired", created }, { status: 502 });
       }
       failed.push({ index, title: task.title, error: "ticktick_failed" });
@@ -121,13 +161,14 @@ async function handleTasks(request: Request, env: Env, requestId: string): Promi
     }
   }
   console.log(JSON.stringify({ message: "tasks", requestId, created: created.length, failed: failed.length }));
+  recordSubmission(created.length, failed.length);
   return Response.json({ created, failed });
 }
 
 export { Quota } from "./quota";
 
 export default {
-  async fetch(request, env): Promise<Response> {
+  async fetch(request, env, ctx): Promise<Response> {
     const url = new URL(request.url);
     const requestId = request.headers.get("cf-ray") ?? crypto.randomUUID();
     try {
@@ -141,11 +182,23 @@ export default {
       if (url.pathname !== "/extract" && url.pathname !== "/tasks") return errorResponse(404, "not_found");
       if (request.method !== "POST") return errorResponse(405, "method_not_allowed");
       return url.pathname === "/extract"
-        ? await handleExtract(request, env, url, requestId)
-        : await handleTasks(request, env, requestId);
+        ? await handleExtract(request, env, ctx, url, requestId)
+        : await handleTasks(request, env, ctx, requestId);
     } catch (error) {
       console.error(JSON.stringify({ message: "unhandled error", requestId, path: url.pathname, error: errorSummary(error) }));
       return errorResponse(500, "internal");
     }
+  },
+
+  async queue(batch, env): Promise<void> {
+    await consumeHistory(batch, env.DB);
+  },
+
+  /** Daily retention purge; a no-op while HISTORY_RETENTION_DAYS is "0". */
+  async scheduled(controller, env): Promise<void> {
+    const days = Number(env.HISTORY_RETENTION_DAYS);
+    if (!(days > 0)) return;
+    const purged = await purgeHistory(env.DB, env.AUDIO, controller.scheduledTime - days * 86_400_000);
+    console.log(JSON.stringify({ message: "history purged", days, ...purged }));
   },
 } satisfies ExportedHandler<Env>;
