@@ -203,6 +203,73 @@ A read-only security audit and a code review found no critical or high issues. F
 
 Git history scanned: no secret values are present in any commit.
 
+### Phase 2b: transcript history (planned)
+Goal: keep every dictation so you can look back at what you said, what the model extracted, and what you actually added.
+
+**Storage decision: D1.**
+
+| Option | Fit |
+|---|---|
+| **D1** ✅ | Small text rows you list by date and search. Full SQL; **FTS5** full-text search; dashboard console; `wrangler d1 execute` from the CLI; migrations; **Time Travel** restore to any minute in the last 30 days. Free tier: 5 GB, 100k rows written and 5M rows read per day. |
+| R2 | Object storage for blobs: no queries, and listing only by key prefix. It's the right place for *audio*, which we don't keep. Possible later as an opt-in, referenced from a D1 row (`audio/<id>.ogg`) with a lifecycle rule to expire it. |
+| Durable Object (SQLite) | `Quota` already uses one, but its data can only be reached through Worker code (no console, CLI or backups), and it would couple history to the rate limiter. D1 is SQLite with the tooling around it. |
+
+**Schema** (`worker/migrations/0001_dictations.sql`):
+```sql
+CREATE TABLE dictations (
+  id             TEXT PRIMARY KEY,      -- UUID, returned to the watch as dictationId
+  created_at     INTEGER NOT NULL,      -- unix ms
+  tz             TEXT NOT NULL,
+  outcome        TEXT NOT NULL,         -- 'extracted' | 'no_speech'
+  transcript     TEXT NOT NULL,
+  audio_bytes    INTEGER NOT NULL,
+  model          TEXT,                  -- which LLM answered (null for no_speech)
+  extracted_json TEXT,                  -- tasks the model proposed
+  submitted_json TEXT,                  -- tasks you kept and sent to TickTick
+  created_count  INTEGER,               -- tasks TickTick actually created (incl. retries)
+  whisper_ms     INTEGER,
+  llm_ms         INTEGER
+);
+CREATE INDEX dictations_created_at ON dictations (created_at DESC);
+-- Full-text search over transcripts, kept in sync by triggers (insert / delete / update of transcript).
+CREATE VIRTUAL TABLE dictations_fts USING fts5 (transcript, content = 'dictations', content_rowid = 'rowid');
+```
+Estimated size: about 2 KB per dictation, so 1 GB holds about 500k dictations. Writes are about 5 rows per dictation (insert, update, search-index entries), so 30 a day is roughly 150 rows against the 100k/day free allowance.
+
+**Worker**
+- `wrangler.jsonc`: `d1_databases: [{ binding: "DB", database_name: "unramble", migrations_dir: "migrations" }]` with no `database_id`. Wrangler provisions the database on the first deploy and writes the ID back, so forks get their own database automatically. Apply migrations with `wrangler d1 migrations apply unramble --remote`.
+- `src/history.ts`: `recordExtraction()` and `recordSubmission()`. Both run in `ctx.waitUntil()` after the response is sent: a D1 failure is logged (`errorSummary`) and never fails or slows a dictation.
+- `/extract`: generates `dictationId`, records the transcript, extracted tasks, model and timings (including `no_speech` outcomes), and returns `dictationId` in the response.
+- `/tasks`: accepts an optional `dictationId`. On the first submission it stores `submitted_json`, then `created_count = COALESCE(created_count, 0) + created`, so retries add up instead of overwriting.
+- **No HTTP read endpoint.** Reading history needs your Cloudflare account, so a leaked `APP_TOKEN` can still only write dictations, not read them.
+- Settings, as `vars` in `wrangler.jsonc`:
+  - `SAVE_TRANSCRIPTS = "true"`: forks can turn history off.
+  - `HISTORY_RETENTION_DAYS = "0"` (keep forever). Above 0, a daily cron (`scheduled` handler, `triggers.crons`) deletes older rows, and the triggers keep the search index in step.
+
+**App:** `Extraction.dictationId` (optional) is kept in the ViewModel and sent with `/tasks`, including on retries. No new screens: the watch is the wrong place to browse history.
+
+**Viewing it later**
+- `bun run history` lists the last 20 dictations: local time, outcome, transcript, proposed titles vs the ones you kept, and how many were created.
+- `bun run history --search "plumber"` searches transcripts with FTS5 and highlights matches.
+- `bun run history --id <uuid>` shows one dictation in full (JSON).
+- `bun run history --purge-older-than 90d` deletes old rows by hand.
+- For anything else: Cloudflare dashboard → Storage & databases → D1 → `unramble` → **Console** for raw SQL, or `bun run wrangler d1 export unramble --remote --output history.sql`.
+- The script runs `wrangler d1 execute --remote --json` through `scripts/wrangler.sh`, with search terms escaped.
+
+**Privacy and docs**
+- README "Security and privacy" changes from "transcripts are never stored" to "transcripts (text, never audio) are stored in **your** D1 database; turn off with `SAVE_TRANSCRIPTS`".
+- Deleted rows stay recoverable through Time Travel for 30 days.
+- Workers Logs stay transcript-free.
+
+**Tests (vitest, migrations applied in the test runtime):**
+- record → fetch round trip
+- FTS search finds a word inside a transcript
+- `/tasks` with a `dictationId` sets `submitted_json` and adds to `created_count` across a retry
+- retention purge deletes only old rows (with the search index still consistent)
+- a D1 failure doesn't change the `/extract` response
+
+**Done when** a dictation on the emulator appears in `bun run history` with its transcript, proposed tasks, kept tasks and `created_count`; `--search` finds it; all tests pass; and the docs reflect the new privacy model.
+
 ### Phase 3: real watch
 - Pair over Wi-Fi debugging and install with `./gradlew installDebug`.
 - Check: recording continues with the screen off, upload works over Bluetooth-via-phone and over Wi-Fi alone, a 5-minute recording uploads and processes, and battery use for 10 recordings is acceptable.
