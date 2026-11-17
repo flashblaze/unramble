@@ -2,18 +2,20 @@ import { z } from "zod";
 import { parseLocalDue } from "./dates";
 
 export const MAX_TASKS = 20;
+const MAX_TITLE = 200;
+const MAX_NOTES = 2000;
 const PRIORITIES = [0, 1, 3, 5] as const;
 
 /** A task as exchanged with the watch. `due` is local wall-clock time: "YYYY-MM-DD" or "YYYY-MM-DDTHH:MM". */
 export const Task = z.object({
-  title: z.string().trim().min(1).max(200),
+  title: z.string().trim().min(1).max(MAX_TITLE),
   due: z
     .string()
     .trim()
     .refine((value) => parseLocalDue(value) !== null, "due must be YYYY-MM-DD or YYYY-MM-DDTHH:MM")
     .optional(),
   priority: z.union(PRIORITIES.map((p) => z.literal(p))),
-  notes: z.string().trim().min(1).max(2000).optional(),
+  notes: z.string().trim().min(1).max(MAX_NOTES).optional(),
 });
 export type Task = z.infer<typeof Task>;
 
@@ -37,7 +39,8 @@ const ModelOutput = z.object({ tasks: z.array(z.unknown()) });
 /**
  * Tasks from the extraction model, lenient per task. Grounding guard: a due date only survives if the
  * model quoted the speaker's timing words (`when_said`), and a priority only if it quoted importance
- * words (`priority_said`). An unparseable date or unknown priority is dropped, not the task.
+ * words (`priority_said`). An unparseable date or unknown priority is dropped, not the task; an
+ * over-long title or notes is truncated, not dropped.
  */
 export function tasksFromModel(output: unknown): Task[] {
   const parsed = ModelOutput.safeParse(output);
@@ -49,10 +52,10 @@ export function tasksFromModel(output: unknown): Task[] {
     const { title, when_said, due, priority_said, priority, notes } = item.data;
     const dueValue = due?.trim();
     const task = Task.safeParse({
-      title,
+      title: title.trim().slice(0, MAX_TITLE),
       due: when_said?.trim() && dueValue && parseLocalDue(dueValue) ? dueValue : undefined,
       priority: priority_said?.trim() && PRIORITIES.some((p) => p === priority) ? priority : 0,
-      notes: notes?.trim() || undefined,
+      notes: notes?.trim().slice(0, MAX_NOTES) || undefined,
     });
     if (task.success) tasks.push(task.data);
   }

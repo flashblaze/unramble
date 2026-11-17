@@ -10,6 +10,14 @@ export class TickTickAuthError extends Error {
   }
 }
 
+/** Any other TickTick failure. Carries only the status: response bodies may echo task text. */
+export class TickTickError extends Error {
+  constructor(readonly status: number) {
+    super(`TickTick ${status}`);
+    this.name = "TickTickError";
+  }
+}
+
 /** Creates one task in the Inbox (no projectId). `fetcher` is injectable for tests. */
 export async function createTask(token: string, task: Task, tz: string, fetcher: typeof fetch = fetch): Promise<string> {
   const body: Record<string, unknown> = { title: task.title, priority: task.priority, timeZone: tz };
@@ -27,7 +35,7 @@ export async function createTask(token: string, task: Task, tz: string, fetcher:
     body: JSON.stringify(body),
   });
   if (res.status === 401) throw new TickTickAuthError();
-  if (!res.ok) throw new Error(`TickTick ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  if (!res.ok) throw new TickTickError(res.status);
   const created = (await res.json()) as { id?: string };
   return created.id ?? "";
 }

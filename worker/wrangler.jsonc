@@ -7,6 +7,9 @@
   "workers_dev": true,
   "preview_urls": false,
   "ai": { "binding": "AI", "remote": true },
+  // Strict per-credential quota (src/quota.ts): caps damage if APP_TOKEN leaks (it ships in the APK).
+  "durable_objects": { "bindings": [{ "name": "QUOTA", "class_name": "Quota" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Quota"] }],
   "secrets": {
     // APP_TOKEN: bearer token the watch sends. TICKTICK_TOKEN: from `bun run auth`.
     "required": ["APP_TOKEN", "TICKTICK_TOKEN"]

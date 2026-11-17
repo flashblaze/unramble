@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import { z } from "zod";
 import { promptClock } from "./dates";
+import { errorSummary } from "./errors";
 import { tasksFromModel, type Task } from "./tasks";
 
 const WHISPER = "@cf/openai/whisper-large-v3-turbo";
@@ -96,24 +97,22 @@ export async function extractTasks(ai: Ai, transcript: string, now: number, tz: 
     { role: "system" as const, content: systemPrompt(now, tz) },
     { role: "user" as const, content: transcript },
   ];
-  const stall = Promise.withResolvers<never>();
-  const timer = setTimeout(() => stall.reject(new Error(`no answer within ${PRIMARY_TIMEOUT_MS} ms`)), PRIMARY_TIMEOUT_MS);
   try {
-    const result = await Promise.race([
-      ai.run(PRIMARY_MODEL, {
+    // The signal cancels the stalled request itself, so it stops consuming neurons.
+    const result = await ai.run(
+      PRIMARY_MODEL,
+      {
         messages,
         response_format: { type: "json_schema", json_schema: { name: "tasks", schema: TASKS_SCHEMA } },
         reasoning_effort: "low",
         temperature: 0,
         max_tokens: 4000,
-      }),
-      stall.promise,
-    ]);
+      },
+      { signal: AbortSignal.timeout(PRIMARY_TIMEOUT_MS) },
+    );
     return { tasks: tasksFromModel(modelJson(result)), model: PRIMARY_MODEL };
   } catch (error) {
-    console.error(JSON.stringify({ message: "primary model failed", model: PRIMARY_MODEL, error: String(error) }));
-  } finally {
-    clearTimeout(timer);
+    console.error(JSON.stringify({ message: "primary model failed", model: PRIMARY_MODEL, error: errorSummary(error) }));
   }
   const result = await ai.run(FALLBACK_MODEL, {
     messages,

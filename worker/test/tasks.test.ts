@@ -25,6 +25,12 @@ describe("tasksFromModel grounding guard", () => {
     expect(tasks).toEqual([{ title: "Renew passport", priority: 0 }]);
   });
 
+  it("truncates an over-long title or notes instead of dropping the task", () => {
+    const [task] = tasksFromModel({ tasks: [{ title: "T".repeat(250), notes: "tomatoes ".repeat(300) }] });
+    expect(task?.title).toHaveLength(200);
+    expect(task?.notes).toHaveLength(2000);
+  });
+
   it("drops items without a usable title and tolerates malformed output", () => {
     expect(tasksFromModel({ tasks: [{ title: "  " }, { due: "2026-11-17" }, "Buy milk", { title: "Buy milk", notes: "2%" }] })).toEqual([
       { title: "Buy milk", priority: 0, notes: "2%" },

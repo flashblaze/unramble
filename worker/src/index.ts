@@ -1,15 +1,18 @@
+import { errorSummary } from "./errors";
 import { extractTasks, isSilence, transcribe } from "./extract";
 import { isValidTimeZone } from "./dates";
 import { CreateTasksBody } from "./tasks";
 import { createTask, TickTickAuthError } from "./ticktick";
 
-const MAX_AUDIO_BYTES = 3 * 1024 * 1024;
+/** The app records ≤ 5 min of 24 kbps Opus (~900 KB); headroom for VBR, but far below abuse-sized uploads. */
+const MAX_AUDIO_BYTES = 1.5 * 1024 * 1024;
 const MAX_JSON_BYTES = 64 * 1024;
 
 type ErrorCode =
   | "unauthorized"
   | "not_found"
   | "method_not_allowed"
+  | "rate_limited"
   | "bad_timezone"
   | "bad_request"
   | "empty_audio"
@@ -102,9 +105,10 @@ async function handleTasks(request: Request, env: Env, requestId: string): Promi
   if (!isValidTimeZone(tz)) return errorResponse(400, "bad_timezone");
 
   const created: { title: string; id: string }[] = [];
-  const failed: { title: string; error: string }[] = [];
+  // `index` is the task's position in the request, so the watch retries exactly the failed ones.
+  const failed: { index: number; title: string; error: string }[] = [];
   // Sequential: keeps TickTick's ordering and stays clear of its rate limits.
-  for (const task of tasks) {
+  for (const [index, task] of tasks.entries()) {
     try {
       created.push({ title: task.title, id: await createTask(env.TICKTICK_TOKEN, task, tz) });
     } catch (error) {
@@ -112,13 +116,15 @@ async function handleTasks(request: Request, env: Env, requestId: string): Promi
         console.error(JSON.stringify({ message: "tasks", requestId, outcome: "ticktick_auth_expired", created: created.length }));
         return Response.json({ error: "ticktick_auth_expired", created }, { status: 502 });
       }
-      failed.push({ title: task.title, error: "ticktick_failed" });
-      console.error(JSON.stringify({ message: "ticktick create failed", requestId, error: String(error) }));
+      failed.push({ index, title: task.title, error: "ticktick_failed" });
+      console.error(JSON.stringify({ message: "ticktick create failed", requestId, index, error: errorSummary(error) }));
     }
   }
   console.log(JSON.stringify({ message: "tasks", requestId, created: created.length, failed: failed.length }));
   return Response.json({ created, failed });
 }
+
+export { Quota } from "./quota";
 
 export default {
   async fetch(request, env): Promise<Response> {
@@ -126,13 +132,19 @@ export default {
     const requestId = request.headers.get("cf-ray") ?? crypto.randomUUID();
     try {
       if (!(await isAuthorized(request, env.APP_TOKEN))) return errorResponse(401, "unauthorized");
+      // After auth, so unauthenticated floods can't lock out the watch. One quota per credential.
+      const verdict = await env.QUOTA.getByName("app-token").consume(url.pathname === "/extract" ? "extract" : "other");
+      if (!verdict.ok) {
+        console.log(JSON.stringify({ message: "rate limited", requestId, path: url.pathname, retryAfter: verdict.retryAfterSeconds }));
+        return Response.json({ error: "rate_limited" }, { status: 429, headers: { "Retry-After": String(verdict.retryAfterSeconds) } });
+      }
       if (url.pathname !== "/extract" && url.pathname !== "/tasks") return errorResponse(404, "not_found");
       if (request.method !== "POST") return errorResponse(405, "method_not_allowed");
       return url.pathname === "/extract"
         ? await handleExtract(request, env, url, requestId)
         : await handleTasks(request, env, requestId);
     } catch (error) {
-      console.error(JSON.stringify({ message: "unhandled error", requestId, path: url.pathname, error: String(error) }));
+      console.error(JSON.stringify({ message: "unhandled error", requestId, path: url.pathname, error: errorSummary(error) }));
       return errorResponse(500, "internal");
     }
   },
