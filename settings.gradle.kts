@@ -19,5 +19,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "watch-app"
+rootProject.name = "unramble"
 include(":app")

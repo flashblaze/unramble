@@ -1,4 +1,4 @@
-package dev.flashblaze.watchapp
+package dev.flashblaze.unramble
 
 import android.Manifest
 import android.content.Intent
@@ -60,12 +60,12 @@ import java.time.format.DateTimeFormatter
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { MaterialTheme { AppScaffold { VoiceTasksApp() } } }
+        setContent { MaterialTheme { AppScaffold { UnrambleApp() } } }
     }
 }
 
 @Composable
-fun VoiceTasksApp(viewModel: MainViewModel = viewModel()) {
+fun UnrambleApp(viewModel: MainViewModel = viewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val permissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->

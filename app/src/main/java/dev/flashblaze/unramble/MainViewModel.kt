@@ -1,4 +1,4 @@
-package dev.flashblaze.watchapp
+package dev.flashblaze.unramble
 
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
@@ -61,7 +61,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun record() {
         if (BuildConfig.WORKER_URL.isBlank() || BuildConfig.APP_TOKEN.isBlank()) {
-            _state.value = UiState.Error("Set voiceTasks.workerUrl and voiceTasks.appToken in local.properties", Retry.RecordAgain)
+            _state.value = UiState.Error("Set unramble.workerUrl and unramble.appToken in local.properties", Retry.RecordAgain)
             return
         }
         discardAudio()

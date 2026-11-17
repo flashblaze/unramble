@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Voice Tasks</string>
+    <string name="app_name">Unramble</string>
     <string name="record">Record</string>
     <string name="tap_to_dictate">Tap to dictate tasks</string>
     <string name="recording">Recording</string>

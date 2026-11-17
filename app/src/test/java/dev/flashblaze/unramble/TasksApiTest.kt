@@ -1,4 +1,4 @@
-package dev.flashblaze.watchapp
+package dev.flashblaze.unramble
 
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json

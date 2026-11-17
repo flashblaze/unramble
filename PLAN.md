@@ -1,6 +1,6 @@
-# Voice → TickTick tasks (Galaxy Watch 8)
+# Unramble: voice → TickTick tasks (Galaxy Watch 8)
 
-Press a button on the watch, dictate, review the extracted tasks, and send them to the TickTick Inbox.
+Press a button on the watch, dictate, review the extracted tasks, and send them to the TickTick Inbox. (Working name was "Voice Tasks"; renamed to **Unramble** on 2026-11-17: app ID `dev.flashblaze.unramble`, Worker `unramble`. User-facing docs: `README.md`.)
 
 ## Decisions
 
@@ -30,7 +30,7 @@ Above the free allowance (Workers Paid plan only): $0.011 per 1,000 neurons, abo
 ```mermaid
 sequenceDiagram
   participant W as Watch app
-  participant CF as Worker (voice-tasks)
+  participant CF as Worker (unramble)
   participant AI as Workers AI
   participant TT as TickTick API
   W->>CF: POST /extract (audio, tz, now) + Bearer APP_TOKEN
@@ -51,7 +51,7 @@ Secrets are stored only as Worker secrets: `APP_TOKEN` (watch → Worker) and `T
 ## Repository layout
 
 ```
-watch-app/
+unramble/
   app/                    Wear OS app (Compose for Wear OS, Material3)
   worker/                 Cloudflare Worker (TypeScript, wrangler)
     src/index.ts          router, bearer auth, body limits, structured logs
@@ -117,7 +117,7 @@ Harness and samples: `worker/spike/` (gitignored). Prompt to port: `worker/spike
 Worst case per request: upload + 26 s Whisper + 24 s LLM ≈ 60 s, so the watch timeout is 120 s.
 
 ### Phase 1: Worker ✅ done 2026-11-16
-Deployed at **`https://voice-tasks.flashblaze.workers.dev`**. Code in `worker/`. Commands (run in `worker/`):
+Deployed at **`https://unramble.flashblaze.workers.dev`** (originally `voice-tasks`, deleted after the rename). Code in `worker/`. Commands (run in `worker/`):
 
 | Command | What |
 |---|---|
@@ -125,7 +125,7 @@ Deployed at **`https://voice-tasks.flashblaze.workers.dev`**. Code in `worker/`.
 | `bun run auth` | TickTick OAuth → `.dev.vars` + Worker secret `TICKTICK_TOKEN` (rerun every 180 days) |
 | `bun run test` / `bun run typecheck` | 34 tests in the Workers runtime / tsc |
 | `bun run types` | regenerate `worker-configuration.d.ts` after changing `wrangler.jsonc` |
-| `bun run wrangler tail voice-tasks` | live logs (JSON: request ID, sizes, task count, model, whisperMs, llmMs, never transcript text) |
+| `bun run wrangler tail unramble` | live logs (JSON: request ID, sizes, task count, model, whisperMs, llmMs, never transcript text) |
 
 **API** (all routes: `POST`, `Authorization: Bearer <APP_TOKEN>`; errors are `{"error": "<code>"}`):
 
@@ -146,7 +146,7 @@ Gotchas:
 - `.dev.vars` holds `APP_TOKEN` and `TICKTICK_TOKEN`; `.env` holds the TickTick client ID and secret. Both are gitignored.
 
 ### Phase 2: watch app ✅ done 2026-11-17
-Code in `app/src/main/java/dev/flashblaze/watchapp/`:
+Code in `app/src/main/java/dev/flashblaze/unramble/`:
 
 | File | What |
 |---|---|
@@ -155,7 +155,7 @@ Code in `app/src/main/java/dev/flashblaze/watchapp/`:
 | `MainViewModel.kt` | State machine `Idle → Recording → Uploading → Review → Creating → Done`, plus `NothingHeard`, `Error(retry)`, `MicPermissionDenied`. Keeps the audio until tasks are created, so Retry never re-records; a partial `/tasks` failure keeps only the failed tasks. |
 | `MainActivity.kt` | Compose for Wear OS Material3 screens. Every screen is a `TransformingLazyColumn`, so text scrolls on the round display. |
 
-Config: `voiceTasks.workerUrl` and `voiceTasks.appToken` in `local.properties` (gitignored) → `BuildConfig`. Unit tests: `./gradlew :app:testDebugUnitTest` (`TasksApiTest`: request body and error mapping).
+Config: `unramble.workerUrl` and `unramble.appToken` in `local.properties` (gitignored) → `BuildConfig`. Unit tests: `./gradlew :app:testDebugUnitTest` (`TasksApiTest`: request body and error mapping).
 
 **Verified on the Wear OS 6 emulator:**
 - Mic and notification permission prompts.
@@ -172,12 +172,12 @@ Fixed along the way:
 
 UI notes: the edge button (e.g. "Add 2") collapses while the list can still scroll and appears at the end, the standard Wear pattern; scroll with the crown/bezel. "Buy milk and call mom tomorrow at 6 PM" sometimes gives *both* tasks the date. The sentence is ambiguous, and the review screen shows it.
 
-**Emulator testing notes** (this machine): the emulator can't open PipeWire/PulseAudio/ALSA (`Could not init 'pa' audio driver`), so host-mic tests are impossible. Instead, `worker/spike/inject_audio.py --burst` streams a WAV into the virtual mic through gRPC `injectAudio`. Start the emulator with `-grpc 8554 -grpc-use-token`; plain `-grpc` listens on all interfaces without auth. Gotchas:
+**Emulator testing notes** (this machine): the emulator can't open PipeWire/PulseAudio/ALSA (`Could not init 'pa' audio driver`), so host-mic tests are impossible. Instead, `tools/emulator/inject_audio.py --burst` streams a WAV into the virtual mic through gRPC `injectAudio`. Start the emulator with `-grpc 8554 -grpc-use-token`; plain `-grpc` listens on all interfaces without auth. Gotchas:
 - Injecting when no guest app is recording **crashes the emulator** (SIGSEGV).
 - Injection is flaky: roughly 1 in 3 recordings receive the audio.
 - A cold boot shows the "Hello" onboarding over the app; swipe up once.
 
-`worker/spike/tap.sh "<label>"` taps a UI node by its text.
+`tools/emulator/tap.sh "<label>"` taps a UI node by its text.
 
 ### Security audit + code review fixes ✅ 2026-11-17
 A read-only security audit and a code review found no critical or high issues. Fixed:

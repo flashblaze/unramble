@@ -12,17 +12,17 @@ val localProperties = Properties().apply {
 }
 
 android {
-    namespace = "dev.flashblaze.watchapp"
+    namespace = "dev.flashblaze.unramble"
     compileSdk = 37 // current Compose requires it; runtime behavior follows targetSdk
 
     defaultConfig {
-        applicationId = "dev.flashblaze.watchapp"
+        applicationId = "dev.flashblaze.unramble"
         minSdk = 30 // Wear OS 3: Galaxy Watch4 and newer
         targetSdk = 36 // Wear OS 6 (Galaxy Watch8)
         versionCode = 1
         versionName = "1.0"
-        buildConfigField("String", "WORKER_URL", "\"${localProperties.getProperty("voiceTasks.workerUrl", "")}\"")
-        buildConfigField("String", "APP_TOKEN", "\"${localProperties.getProperty("voiceTasks.appToken", "")}\"")
+        buildConfigField("String", "WORKER_URL", "\"${localProperties.getProperty("unramble.workerUrl", "")}\"")
+        buildConfigField("String", "APP_TOKEN", "\"${localProperties.getProperty("unramble.appToken", "")}\"")
     }
 
     buildTypes {

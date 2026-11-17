@@ -1,4 +1,4 @@
-package dev.flashblaze.watchapp
+package dev.flashblaze.unramble
 
 import android.app.NotificationChannel
 import android.app.NotificationManager

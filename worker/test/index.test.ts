@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const AUTH = { Authorization: "Bearer test-app-token" };
 
 async function call(path: string, init: RequestInit = {}) {
-  const res = await exports.default.fetch(`https://voice-tasks.test${path}`, { method: "POST", ...init });
+  const res = await exports.default.fetch(`https://unramble.test${path}`, { method: "POST", ...init });
   return { status: res.status, body: (await res.json()) as Record<string, unknown> };
 }
 
